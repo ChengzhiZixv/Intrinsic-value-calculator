@@ -1,0 +1,11 @@
+# 复制为 analyst_overrides.yaml 后按需修改
+discount_rate: 0.10
+perpetual_growth: 0.025
+explicit_years: 5
+explicit_growth_rate: 0.05
+# PE 相对估值锚定倍数（无行业可比时使用，可参考历史或同行）
+pe_anchor: 20
+ev_ebitda_anchor: 12
+ev_sales_anchor: 5
+dcf_weight: 0.6
+relative_weight: 0.4
