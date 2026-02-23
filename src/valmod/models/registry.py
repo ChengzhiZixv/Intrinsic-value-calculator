@@ -1,10 +1,11 @@
 # =============================================================================
-# Layer 5 - 模型注册表（registry.py）
+# Layer 5 - Model Registry (registry.py)
 # =============================================================================
-# 职责：根据 EnabledModels 调用各估值模型，汇总为 ModelOutputs。
-# 处理模型失败时优雅降级（该模型输出 None，不阻断流水线）。
+# Responsibility: invoke each valuation model according to EnabledModels and
+# aggregate results into ModelOutputs. Model failures degrade gracefully
+# (the failing model outputs None without blocking the pipeline).
 #
-# 你可调整：无业务参数。
+# Adjustable: no business parameters.
 # =============================================================================
 
 from typing import Optional
@@ -22,9 +23,9 @@ def run_all_models(
     overrides: Optional[dict] = None,
 ) -> ModelOutputs:
     """
-    按 enabled 列表调用各模型，汇总输出。
-    输入：norm, assumptions, raw, enabled, overrides
-    输出：ModelOutputs
+    Invoke each model in the enabled list and aggregate outputs.
+    Input:  norm, assumptions, raw, enabled, overrides
+    Output: ModelOutputs
     """
     overrides = overrides or {}
     model_warnings = []
@@ -37,7 +38,7 @@ def run_all_models(
     damodaran_iv_val = None
     damodaran_iv_details = None
 
-    # ── Step 1：Damodaran PE 回归（只要有 gEPS 就尝试） ──────────────────────
+    # ── Step 1: Damodaran PE regression (attempt whenever gEPS is provided) ──
     gEPS = overrides.get("gEPS")
     if gEPS is not None:
         try:
@@ -50,21 +51,23 @@ def run_all_models(
             damodaran_pe_val = res.get("damodaran_pe")
             damodaran_pe_details = res.get("damodaran_pe_details")
         except Exception as e:
-            model_warnings.append(f"Damodaran PE 计算异常: {e}")
+            model_warnings.append(f"Damodaran PE computation error: {e}")
 
-    # ── Step 2：Damodaran 内在价值（优先运行，以获取 WACC 供相对估值使用）──
+    # ── Step 2: Damodaran intrinsic value (run first to obtain WACC for relative valuation) ──
     _computed_wacc = None
     if overrides.get("rf") is not None:
         try:
             res = run_damodaran_iv(raw, overrides)
             damodaran_iv_val = res.get("damodaran_iv")
             damodaran_iv_details = res.get("damodaran_iv_details") or {}
-            # 提取折现率：FCFF → WACC，FCFE/DDM → re
+            # Extract discount rate: FCFF → WACC; FCFE/DDM → re
             _computed_wacc = damodaran_iv_details.get("wacc") or damodaran_iv_details.get("re")
         except Exception as e:
-            model_warnings.append(f"达莫达兰内在价值计算异常: {e}")
+            model_warnings.append(f"Damodaran intrinsic value computation error: {e}")
+            # Retain error info so the UI shows a specific message rather than a blank or generic prompt
+            damodaran_iv_details = {"error": f"Computation error ({type(e).__name__}): {e}"}
 
-    # ── Step 3：相对估值（基本面推导倍数，使用 IV 计算的 WACC） ─────────────
+    # ── Step 3: Relative valuation (fundamentals-derived multiples using IV's WACC) ──
     if "ev_ebitda" in enabled or "ev_sales" in enabled:
         try:
             mult_overrides = dict(overrides)
@@ -75,7 +78,7 @@ def run_all_models(
             ev_sales_val = mult.get("ev_sales")
             multiples_details = mult.get("details")
         except Exception as e:
-            model_warnings.append(f"相对估值计算异常: {e}")
+            model_warnings.append(f"Relative valuation computation error: {e}")
 
     return ModelOutputs(
         ev_ebitda=ev_ebitda_val,

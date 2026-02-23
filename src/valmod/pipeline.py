@@ -1,12 +1,13 @@
 # =============================================================================
-# 主流水线（pipeline.py）
+# Main Pipeline (pipeline.py)
 # =============================================================================
-# 职责：串联 Layer 1～8，输入 Ticker 输出完整估值报告。
-# 支持：config/analyst_overrides.yaml 加载；overrides 参数覆盖；重试与错误处理。
+# Responsibility: chain Layers 1–8 together; input a ticker, output a complete
+# valuation report. Supports config/analyst_overrides.yaml loading, overrides
+# parameter merging, retries, and error handling.
 #
-# 你可调整：
-# - 通过 config/analyst_overrides.yaml 或 run_valuation(ticker, overrides={...})
-# - 所有 [ANALYST_REQUIRED] 参数均可覆盖
+# Adjustable:
+# - Via config/analyst_overrides.yaml or run_valuation(ticker, overrides={...})
+# - All [ANALYST_REQUIRED] parameters can be overridden
 # =============================================================================
 
 import os
@@ -36,7 +37,7 @@ from src.valmod.models.registry import run_all_models
 from src.valmod.aggregation.weighting import aggregate
 from src.valmod.warnings.context import build_warnings
 
-# 重试配置
+# Retry configuration
 MAX_RETRIES = 3
 RETRY_DELAY = 2.0
 
@@ -45,21 +46,21 @@ _B = 1_000_000_000.0
 
 def _apply_raw_overrides(raw: "RawData", params: dict) -> "RawData":
     """
-    将用户在卡片内补填的财报数据应用到 RawData 对象。
-    约定：
-      raw_diluted_eps        - 稀释EPS，直接美元值（如 6.08）
-      raw_payout_ratio       - 派息率，小数（如 0.035）
-      raw_operating_income_b - EBIT，单位 $B
-      raw_capex_b            - 资本开支，单位 $B（正数，模型内部取 abs）
-      raw_da_b               - 折旧摊销，单位 $B
-      raw_net_income_b       - 净利润，单位 $B
-      raw_total_debt_b       - 总债务，单位 $B
-      raw_cash_b             - 现金，单位 $B
-      raw_shares_b           - 稀释股本，单位 亿股（×1e8）→ 实际传入以股为单位 $B（×1e9）
-      raw_ebitda_b           - EBITDA，单位 $B
-      raw_revenue_b          - 营收，单位 $B
-      raw_dividends_paid_b   - 已付股息总额，单位 $B
-      raw_net_debt_issuance_b- 净债务融资额，单位 $B
+    Apply user-supplied financial data overrides to the RawData object.
+    Conventions:
+      raw_diluted_eps        - diluted EPS, in dollars (e.g. 6.08)
+      raw_payout_ratio       - payout ratio, decimal (e.g. 0.035)
+      raw_operating_income_b - EBIT, in $B
+      raw_capex_b            - capital expenditure, in $B (positive; model takes abs internally)
+      raw_da_b               - depreciation & amortization, in $B
+      raw_net_income_b       - net income, in $B
+      raw_total_debt_b       - total debt, in $B
+      raw_cash_b             - cash & equivalents, in $B
+      raw_shares_b           - diluted shares, in $B (i.e. billions of shares × 1e9)
+      raw_ebitda_b           - EBITDA, in $B
+      raw_revenue_b          - revenue, in $B
+      raw_dividends_paid_b   - total dividends paid, in $B
+      raw_net_debt_issuance_b- net debt issuance, in $B
     """
     kwargs = {}
     if params.get("raw_diluted_eps") is not None:
@@ -89,7 +90,7 @@ def _apply_raw_overrides(raw: "RawData", params: dict) -> "RawData":
 
 
 def _load_config() -> dict:
-    """加载 config/analyst_overrides.yaml（若存在）。"""
+    """Load config/analyst_overrides.yaml if it exists."""
     for p in [Path("config/analyst_overrides.yaml"), Path(__file__).parent.parent.parent / "config" / "analyst_overrides.yaml"]:
         if p.exists():
             try:
@@ -102,8 +103,9 @@ def _load_config() -> dict:
 
 def run_valuation(ticker: str, overrides: Optional[dict] = None) -> dict[str, Any]:
     """
-    估值主入口。输入任意美股 Ticker，输出完整报告。
-    若调用方传入 overrides（如 UI 滑块），则仅用 overrides，不用 config 文件。
+    Main valuation entry point. Input any US stock ticker; output a complete report.
+    If the caller provides overrides (e.g. from UI sliders), those take precedence
+    and the config file is not loaded.
     """
     overrides = overrides or {}
     if overrides:
@@ -115,13 +117,13 @@ def run_valuation(ticker: str, overrides: Optional[dict] = None) -> dict[str, An
     for attempt in range(MAX_RETRIES):
         try:
             raw = fetch_raw(ticker)
-            raw = _apply_raw_overrides(raw, params)  # 应用用户补填的财报数据
+            raw = _apply_raw_overrides(raw, params)  # apply user-supplied financial overrides
             break
         except Exception as e:
             if attempt == MAX_RETRIES - 1:
                 return {
                     "ticker": ticker,
-                    "error": f"数据拉取失败（已重试 {MAX_RETRIES} 次）: {e}",
+                    "error": f"Data fetch failed (retried {MAX_RETRIES} times): {e}",
                     "data_quality": {"completeness": 0, "missing": ["fetch_failed"], "warnings": [], "critical": [str(e)]},
                 }
             time.sleep(RETRY_DELAY * (2**attempt))
@@ -155,11 +157,11 @@ def run_valuation(ticker: str, overrides: Optional[dict] = None) -> dict[str, An
         "sector": raw.sector,
         "industry": raw.industry,
         "financials": {
-            # 直接值（非$B）
+            # Direct values (not in $B)
             "diluted_eps":   raw.diluted_eps,
             "payout_ratio":  raw.payout_ratio,
             "beta":          raw.beta,
-            # $B 单位（便于 UI 展示与比较）
+            # $B unit (convenient for UI display and comparison)
             "operating_income_b":    _b(raw.operating_income),
             "capex_b":               _b(abs(raw.capex)) if raw.capex is not None else None,
             "da_b":                  _b(abs(raw.depreciation_amortization)) if raw.depreciation_amortization is not None else None,

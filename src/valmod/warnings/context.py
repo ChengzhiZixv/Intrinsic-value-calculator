@@ -1,13 +1,14 @@
 # =============================================================================
-# Layer 8 - 智能告警与上下文（context.py）
+# Layer 8 - Intelligent Alerts and Context (context.py)
 # =============================================================================
-# 职责：生成分级告警（Critical/Warning）、估值不确定性告警、激进会计检测。
+# Responsibility: generate tiered alerts (Critical/Warning), valuation
+# uncertainty warnings, and aggressive accounting detection.
 #
-# 你可调整（下方常量）：
-# - TERMINAL_PCT_WARN：终值占比告警阈值
-# - DIVERGENCE_WARN：模型分歧告警阈值
-# - DA_REVENUE_THRESHOLD：折旧/收入比率异常阈值
-# - FCF_NI_RATIO_FLOOR：FCF/净利润长期偏低阈值
+# Adjustable (constants below):
+# - TERMINAL_PCT_WARN:      terminal value share alert threshold
+# - DIVERGENCE_WARN:        model divergence alert threshold
+# - DA_REVENUE_THRESHOLD:   D&A / revenue ratio anomaly threshold
+# - FCF_NI_RATIO_FLOOR:     FCF / net income long-term low threshold
 # =============================================================================
 
 from typing import Optional
@@ -28,30 +29,30 @@ def build_warnings(
     norm: Optional[NormalizedFinancials] = None,
 ) -> list:
     """
-    生成分级告警列表。
-    输入：quality, models, terminal_pct, raw, norm
-    输出：AlertItem 列表
+    Generate a tiered alert list.
+    Input:  quality, models, terminal_pct, raw, norm
+    Output: list of AlertItem
     """
     alerts = []
 
     for c in quality.critical:
-        alerts.append(AlertItem(level="critical", message=c, reason="数据质量", affected_models=[], suggestion="请核对数据源"))
+        alerts.append(AlertItem(level="critical", message=c, reason="Data quality", affected_models=[], suggestion="Verify data source"))
 
     for w in quality.warnings:
-        alerts.append(AlertItem(level="warning", message=w, reason="数据质量", affected_models=[], suggestion=""))
+        alerts.append(AlertItem(level="warning", message=w, reason="Data quality", affected_models=[], suggestion=""))
 
     if terminal_pct is not None and terminal_pct > TERMINAL_PCT_WARN:
         alerts.append(AlertItem(
             level="warning",
-            message=f"终值占比 {terminal_pct:.1%} 超过 {TERMINAL_PCT_WARN:.0%}",
-            reason="估值高度依赖长期假设",
+            message=f"Terminal value accounts for {terminal_pct:.1%}, exceeding {TERMINAL_PCT_WARN:.0%}",
+            reason="Valuation highly sensitive to long-term assumptions",
             affected_models=["damodaran_iv"],
-            suggestion="建议人工复核永续增长与折现率",
+            suggestion="Manually review perpetual growth rate and discount rate",
         ))
 
     if models.model_warnings:
         for mw in models.model_warnings:
-            alerts.append(AlertItem(level="warning", message=mw, reason="模型输出", affected_models=[], suggestion=""))
+            alerts.append(AlertItem(level="warning", message=mw, reason="Model output", affected_models=[], suggestion=""))
 
     if raw is not None and norm is not None:
         if raw.depreciation_amortization is not None and raw.revenue is not None and raw.revenue > 0:
@@ -59,10 +60,10 @@ def build_warnings(
             if da_ratio > DA_REVENUE_THRESHOLD:
                 alerts.append(AlertItem(
                     level="warning",
-                    message=f"折旧/收入比率 {da_ratio:.1%} 较高",
-                    reason="PE 类估值可能失真",
+                    message=f"D&A / Revenue ratio {da_ratio:.1%} is elevated",
+                    reason="PE-based valuation may be distorted",
                     affected_models=["damodaran_pe"],
-                    suggestion="需核对维持性资本开支与资产处置",
+                    suggestion="Review maintenance CapEx and asset disposals",
                 ))
 
         if norm.fcf is not None and norm.net_income is not None and norm.net_income > 0:
@@ -70,10 +71,10 @@ def build_warnings(
             if ratio < FCF_NI_RATIO_FLOOR:
                 alerts.append(AlertItem(
                     level="warning",
-                    message=f"FCF/净利润 {ratio:.2f} 偏低",
-                    reason="盈利与现金流脱节",
+                    message=f"FCF / Net Income ratio {ratio:.2f} is low",
+                    reason="Earnings and cash flow are diverging",
                     affected_models=["damodaran_iv"],
-                    suggestion="建议核对经营现金流质量",
+                    suggestion="Review operating cash flow quality",
                 ))
 
     return alerts

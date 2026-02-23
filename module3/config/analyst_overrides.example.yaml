@@ -1,6 +1,0 @@
-# 复制为 analyst_overrides.yaml 后按需修改
-discount_rate: 0.10   # 折现率 r
-perpetual_growth: 0.025  # 永续增长 g
-explicit_years: 5
-dcf_weight: 0.6
-relative_weight: 0.4

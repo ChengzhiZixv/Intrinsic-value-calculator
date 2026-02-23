@@ -1,12 +1,14 @@
 # =============================================================================
-# Layer 1 - 数据质量报告（quality.py）
+# Layer 1 - Data Quality Report (quality.py)
 # =============================================================================
-# 职责：根据 RawData 生成 DataQualityReport。
-# 检查：缺失字段、逻辑自洽性（市值≈股价×股本）、财报时效性。
-# 不做插补；仅记录问题供后续层「优雅降级」或禁用模型。
+# Responsibility: generate a DataQualityReport from RawData.
+# Checks: missing fields, logical consistency (market cap ≈ price × shares),
+# and financial data freshness.
+# No imputation is performed; issues are recorded for downstream graceful
+# degradation or model disabling.
 #
-# 你可调整：
-# - 财报过期阈值（默认 6 个月）在下方 THRESHOLD_MONTHS 处。
+# Adjustable:
+# - Financial data staleness threshold (default 6 months) at THRESHOLD_MONTHS below.
 # =============================================================================
 
 from datetime import datetime, timedelta
@@ -14,26 +16,26 @@ from typing import List
 
 from src.valmod.types import RawData, DataQualityReport
 
-# [可调] 财报超过此月数未更新则触发 Warning
+# [Adjustable] Warn if financials have not been updated within this many months
 THRESHOLD_MONTHS = 6
 
 
 def _check_consistency(raw: RawData) -> List[str]:
     """
-    逻辑自洽性检查：市值 ≈ 股价 × 股本。
-    若三者都有且偏差 >5%，加入 critical。
+    Logical consistency check: market cap ≈ price × shares.
+    If all three are present and diverge by >5%, add to critical list.
     """
     out = []
     p, m, s = raw.current_price, raw.market_cap, raw.shares
     if p is not None and m is not None and s is not None and s > 0 and p > 0:
         implied_mcap = p * s
         if abs(m - implied_mcap) / max(m, implied_mcap, 1) > 0.05:
-            out.append("市值与股价×股本不一致（偏差>5%），请核对数据源")
+            out.append("Market cap inconsistent with price × shares (divergence >5%); verify data source")
     return out
 
 
 def _check_freshness(raw: RawData) -> List[str]:
-    """财报时效性：最新财报日期距今天数。超过 THRESHOLD_MONTHS 则 Warning。"""
+    """Data freshness: check days since the latest financial report date. Warn if >THRESHOLD_MONTHS."""
     out = []
     d = raw.latest_financial_date
     if not d:
@@ -46,7 +48,7 @@ def _check_freshness(raw: RawData) -> List[str]:
             latest = datetime(year, month, day)
             delta = datetime.now() - latest
             if delta.days > THRESHOLD_MONTHS * 30:
-                out.append(f"财报已超过 {THRESHOLD_MONTHS} 个月未更新，数据可能滞后")
+                out.append(f"Financials not updated in over {THRESHOLD_MONTHS} months; data may be stale")
     except Exception:
         pass
     return out
@@ -54,15 +56,15 @@ def _check_freshness(raw: RawData) -> List[str]:
 
 def build_quality_report(raw: RawData) -> DataQualityReport:
     """
-    生成数据质量报告。
-    输入：RawData
-    输出：DataQualityReport（缺失项、警告、严重问题、来源日志）
+    Generate a data quality report.
+    Input:  RawData
+    Output: DataQualityReport (missing fields, warnings, critical issues, source log)
     """
     missing = []
     warnings = []
     critical = []
 
-    # ----- 缺失字段清单 -----
+    # ----- Missing field list -----
     if raw.current_price is None:
         missing.append("current_price")
     if raw.market_cap is None:
@@ -84,22 +86,22 @@ def build_quality_report(raw: RawData) -> DataQualityReport:
     if raw.capex is None:
         missing.append("capex")
 
-    # ----- 逻辑自洽性 -----
+    # ----- Logical consistency -----
     critical.extend(_check_consistency(raw))
 
-    # ----- 时效性 -----
+    # ----- Data freshness -----
     warnings.extend(_check_freshness(raw))
 
-    # ----- 完整度：关键字段占比 -----
+    # ----- Completeness: fraction of key fields present -----
     key_fields = ["current_price", "market_cap", "shares", "cfo", "revenue", "net_income", "diluted_eps", "ebitda", "enterprise_value"]
     present = sum(1 for f in key_fields if getattr(raw, f, None) is not None)
     completeness = present / len(key_fields) if key_fields else 0.0
 
-    # ----- CFO 缺失导致 DCF 不可用 -----
+    # ----- CFO missing → DCF unavailable -----
     if raw.cfo is None:
-        critical.append("CFO 缺失，DCF 模型不可用")
+        critical.append("CFO missing; DCF model unavailable")
 
-    source_log = f"数据来源: Yahoo Finance | 拉取时间: {raw.fetch_timestamp or 'N/A'}"
+    source_log = f"Data source: Yahoo Finance | Fetched: {raw.fetch_timestamp or 'N/A'}"
 
     return DataQualityReport(
         completeness=completeness,

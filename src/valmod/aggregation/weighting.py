@@ -1,31 +1,33 @@
 # =============================================================================
-# Layer 7 - 模型融合（weighting.py）
+# Layer 7 - Model Aggregation (weighting.py)
 # =============================================================================
-# 核心逻辑：以 Damodaran IV（FCFF/FCFE/DDM）为内在价值锚，
-#           相对估值（EV/EBITDA、EV/Sales）和 PE 回归作为置信区间验证。
+# Core logic: uses Damodaran IV (FCFF/FCFE/DDM) as the intrinsic value anchor;
+# relative valuation (EV/EBITDA, EV/Sales) and PE regression serve as
+# confidence interval cross-checks.
 #
-# 聚合规则：
-#   1. 若 Damodaran IV 可用 → mid = IV；低/高 = 所有模型最小/最大值
-#      任何相对估值与 IV 偏差 > IV_DIVERGENCE_THRESHOLD → divergence_alert
-#   2. 若 IV 不可用、但 Damodaran PE 可用 → mid = PE，区间同上
-#   3. 兜底：等权平均所有可用模型
+# Aggregation rules:
+#   1. If Damodaran IV is available → mid = IV; low/high = mid ± 15%
+#      Any relative valuation diverging from IV by > IV_DIVERGENCE_THRESHOLD → divergence_alert
+#   2. If IV unavailable but Damodaran PE available → mid = PE; range same as above
+#   3. Fallback: equal-weight average of all available models
 #
-# 你可调整：
-# - IV_DIVERGENCE_THRESHOLD：相对估值与内在价值的偏差告警阈值（默认 20%）
-# - SPREAD_ALERT_THRESHOLD：所有模型最大偏差超过此阈值也告警（默认 30%）
+# Adjustable:
+# - IV_DIVERGENCE_THRESHOLD: alert threshold for relative vs. intrinsic value divergence (default 20%)
+# - SPREAD_ALERT_THRESHOLD:  alert if max spread across all models exceeds this (default 30%)
 # =============================================================================
 
 from src.valmod.types import ModelOutputs, FinalRange
 
-IV_DIVERGENCE_THRESHOLD = 0.20   # 相对估值与 IV 偏差 >20% → 告警
-SPREAD_ALERT_THRESHOLD  = 0.30   # 全模型区间宽度 >30% of mid → 告警
+IV_DIVERGENCE_THRESHOLD = 0.20   # relative valuation diverges from IV by >20% → alert
+SPREAD_ALERT_THRESHOLD  = 0.30   # total model spread > 30% of mid → alert
 
 
 def aggregate(models: ModelOutputs) -> FinalRange:
     """
-    IV 锚定聚合：以内在价值为中枢，相对估值作置信区间。
-    输入：ModelOutputs
-    输出：FinalRange
+    IV-anchored aggregation: uses intrinsic value as the mid-point, with
+    relative valuation as a confidence interval cross-check.
+    Input:  ModelOutputs
+    Output: FinalRange
     """
     contributions = {}
     if models.damodaran_iv is not None:
@@ -40,20 +42,20 @@ def aggregate(models: ModelOutputs) -> FinalRange:
     values = list(contributions.values())
     if not values:
         return FinalRange(low=0.0, mid=0.0, high=0.0, model_contributions=contributions,
-                          weight_explain="无可用模型", divergence_alert=False)
+                          weight_explain="No models available", divergence_alert=False)
 
-    # ── 确定 mid ─────────────────────────────────────────────────────────────
+    # ── Determine mid ─────────────────────────────────────────────────────────
     if models.damodaran_iv is not None:
         mid = models.damodaran_iv
-        anchor_name = "Damodaran IV（内在价值）"
+        anchor_name = "Damodaran IV (intrinsic value)"
     elif models.damodaran_pe is not None:
         mid = models.damodaran_pe
-        anchor_name = "Damodaran PE（内在价值模型未运行）"
+        anchor_name = "Damodaran PE (IV model not run)"
     else:
         mid = sum(values) / len(values)
-        anchor_name = f"等权平均（{len(values)} 个模型）"
+        anchor_name = f"Equal-weight average ({len(values)} models)"
 
-    # ── 偏差检查：相对估值与锚点的距离 ────────────────────────────────────────
+    # ── Divergence check: distance between relative valuation and anchor ──────
     divergence_alert = False
     if mid and mid > 0:
         relative_keys = [k for k in contributions if k not in ("damodaran_iv", "damodaran_pe")]
@@ -62,17 +64,22 @@ def aggregate(models: ModelOutputs) -> FinalRange:
             if dev > IV_DIVERGENCE_THRESHOLD:
                 divergence_alert = True
                 break
-        # 也检查全局区间宽度
+        # Also check total spread across all models
         v_min, v_max = min(values), max(values)
         if (v_max - v_min) / mid > SPREAD_ALERT_THRESHOLD:
             divergence_alert = True
 
-    v_min = min(values)
-    v_max = max(values)
-    low = v_min if len(values) > 1 else mid * 0.85
-    high = v_max if len(values) > 1 else mid * 1.15
+    # Range fixed to ±15% of the best model's value (mid)
+    # No longer using cross-model scatter to widen the range, which would make
+    # it meaninglessly wide when model assumptions differ substantially.
+    if mid > 0:
+        low = mid * 0.85
+        high = mid * 1.15
+    else:
+        low = 0.0
+        high = 0.0
 
-    weight_explain = f"{anchor_name}锚定｜区间 = 所有模型最小–最大值"
+    weight_explain = f"{anchor_name} anchor | range = ±15% of mid"
 
     return FinalRange(
         low=low,

@@ -6,151 +6,154 @@ import streamlit as st
 import plotly.graph_objects as go
 
 st.set_page_config(page_title="US Equity Valuation", layout="wide")
-st.title("美股估值工具")
+st.title("US Equity Valuation Tool")
 
 ticker = st.text_input(
-    "股票代码（Ticker）",
+    "Ticker Symbol",
     value="",
     max_chars=10,
-    placeholder="例：AAPL  PLTR  ORCL  MSFT",
+    placeholder="e.g. AAPL  PLTR  ORCL  MSFT",
 )
 
 if not ticker or not ticker.strip():
-    st.info("请输入股票代码后自动计算。")
+    st.info("Enter a ticker symbol to start valuation.")
     st.stop()
 
 ticker = ticker.strip().upper()
 
-# ── 侧边栏：宏观估值参数 ────────────────────────────────────────────────────
+# ── Sidebar: valuation parameters ────────────────────────────────────────────
 with st.sidebar:
-    st.header("估值参数")
+    st.header("Valuation Parameters")
 
-    # ── 模型一：PE 回归估值 ───────────────────────────────────────────────────
-    st.markdown("#### 模型一：PE 回归估值")
-    st.caption("以下参数**仅供 PE 回归模型使用**。税率也被内在价值模型共用。")
+    # ── Model 1: PE Regression Valuation ─────────────────────────────────────
+    st.markdown("#### Model 1: PE Regression Valuation")
+    st.caption("Parameters below are **used exclusively by the PE regression model**. Tax rate is also shared with the intrinsic value model.")
 
     gEPS_pct = st.number_input(
-        "预期 EPS 增速 gEPS（%）　★必填",
+        "Expected EPS Growth gEPS (%)  ★ Required",
         min_value=-20.0, max_value=100.0, value=10.0, step=0.5,
         format="%.1f",
         help=(
-            "你预期该公司未来的 EPS 年增速。\n\n"
-            "PE 回归中影响最大的变量（回归系数 53.16）。\n"
-            "通常参考卖方一致预期或历史 EPS 增速，范围 5–20%。"
+            "Your expected annual EPS growth rate for this company.\n\n"
+            "The most influential variable in the PE regression (coefficient 53.16).\n"
+            "Typically referenced from sell-side consensus or historical EPS growth, range 5–20%."
         ),
     )
 
     sector_beta_unlevered = st.number_input(
-        "行业无杠杆 Beta　★必填",
-        min_value=0.10, max_value=3.00, value=1.15, step=0.05,
+        "Sector Unlevered Beta  [Optional: leave 0 to use yfinance beta]",
+        min_value=0.0, max_value=3.00, value=0.0, step=0.05,
         format="%.2f",
         help=(
-            "行业平均无杠杆 Beta（从 damodaran.com 查询）。\n\n"
-            "软件/云 ≈ 1.15，消费 ≈ 0.80，金融 ≈ 0.40。\n"
-            "系统自动用公司债务/市值比加杠杆，得到公司层面 Beta。"
+            "Sector average unlevered beta from Damodaran's website (updated every January):\n"
+            "https://pages.stern.nyu.edu/~adamodar/New_Home_Page/datafile/Betas.html\n\n"
+            "Typical values: Software/Cloud ≈ 1.15, Consumer ≈ 0.80, Financials ≈ 0.40.\n\n"
+            "The system re-levers beta using the company D/E ratio automatically.\n"
+            "Leave 0: falls back to yfinance regression beta (less accurate, for reference only)."
         ),
     )
 
     tax_rate_pct = st.number_input(
-        "边际税率（%）　[模型一 + 模型三 共用]",
+        "Marginal Tax Rate (%)  [Shared by Model 1 + Model 3]",
         min_value=0.0, max_value=40.0, value=25.0, step=1.0,
         format="%.0f",
         help=(
-            "美国联邦+州综合税率，通常取 25%。\n\n"
-            "PE 回归：用于计算加杠杆 Beta。\n"
-            "内在价值折现：用于计算 NOPAT、WACC、再投资率。"
+            "Combined US federal + state tax rate, typically 25%.\n\n"
+            "PE regression: used to compute levered beta.\n"
+            "Intrinsic value discounting: used to compute NOPAT, WACC, and reinvestment rate."
         ),
     )
 
     st.markdown("---")
-    st.caption("*模型二（相对估值）无需额外参数——倍数由模型三 WACC 和财报数据自动推导*")
+    st.caption("*Model 2 (Relative Valuation) requires no extra parameters — multiples are auto-derived from Model 3 WACC and financial data*")
     st.markdown("---")
 
-    # ── 模型三：内在价值折现（FCFF / FCFE / DDM） ────────────────────────────
-    st.markdown("#### 模型三：内在价值折现（FCFF / FCFE / DDM）")
+    # ── Model 3: Intrinsic Value Discounting (FCFF / FCFE / DDM) ─────────────
+    st.markdown("#### Model 3: Intrinsic Value Discounting (FCFF / FCFE / DDM)")
     st.caption(
-        "以下参数**仅供内在价值折现模型使用**，"
-        "同时也会传给模型二的 EV/EBITDA 和 EV/Sales 倍数推导。"
+        "Parameters below are **used exclusively by the intrinsic value discounting model**, "
+        "and are also passed to Model 2's EV/EBITDA and EV/Sales multiple derivation."
     )
 
     rf_pct = st.number_input(
-        "无风险利率 Rf（%）　★必填",
+        "Risk-Free Rate Rf (%)  ★ Required",
         min_value=0.5, max_value=10.0, value=4.5, step=0.1,
         format="%.1f",
         help=(
-            "通常取 10 年期美债收益率（当前约 4–5%）。\n\n"
-            "用途：CAPM 基准收益率 → 计算股权成本 re = Rf + β × ERP。\n"
-            "约束：永续增长率 g_stable 必须 ≤ Rf。"
+            "Typically the 10-year US Treasury yield (currently ~4–5%).\n\n"
+            "Usage: CAPM base return → cost of equity re = Rf + β × ERP.\n"
+            "Constraint: perpetual growth rate g_stable must be ≤ Rf."
         ),
     )
 
     erp_pct = st.number_input(
-        "股权风险溢价 ERP（%）　★必填",
+        "Equity Risk Premium ERP (%)  ★ Required",
         min_value=1.0, max_value=10.0, value=4.5, step=0.1,
         format="%.1f",
         help=(
-            "股票相对无风险资产的超额回报预期，美股约 4.2–4.5%。\n\n"
-            "用途：re = Rf + β × ERP → 用于折现股权现金流（FCFE / DDM）"
-            " 及 WACC 中的股权成本部分（FCFF）。"
+            "Expected excess return of equities over risk-free assets; ~4.2–4.5% for US stocks.\n\n"
+            "Source: Damodaran's website (updated monthly):\n"
+            "https://pages.stern.nyu.edu/~adamodar/New_Home_Page/datafile/implprem/ERPbymonth.xlsx\n\n"
+            "Usage: re = Rf + β × ERP → discounts equity cash flows (FCFE/DDM) and WACC equity component (FCFF)."
         ),
     )
 
     default_spread_pct = st.number_input(
-        "违约利差 Default Spread（%）　[仅 FCFF 使用]",
+        "Default Spread (%)  [FCFF only]",
         min_value=0.0, max_value=10.0, value=1.5, step=0.1,
         format="%.1f",
         help=(
-            "根据公司信用评级查询。\n\n"
-            "用途：税前债务成本 rd = Rf + Default Spread → 计算 WACC。\n"
-            "BBB 级 ≈ 1.5–2.0%，A 级 ≈ 0.8–1.2%，BB 级 ≈ 2.5–3.5%。\n"
-            "仅在系统选择 FCFF 模型时有效；FCFE / DDM 不使用此项。"
+            "Look up based on the company's credit rating.\n\n"
+            "Usage: pre-tax cost of debt rd = Rf + Default Spread → computes WACC.\n"
+            "BBB ≈ 1.5–2.0%, A ≈ 0.8–1.2%, BB ≈ 2.5–3.5%.\n"
+            "Only used when the system selects the FCFF model; FCFE / DDM do not use this."
         ),
     )
 
     g_high_iv_pct = st.number_input(
-        "高速增长率（%）　★必填",
+        "High Growth Rate (%)  ★ Required",
         min_value=0.0, max_value=40.0, value=10.0, step=0.5,
         format="%.1f",
         help=(
-            "高速增长阶段的年增速（FCFF/FCFE 对应 FCF 增速，DDM 对应 DPS 增速）。\n\n"
-            "可参考分析师一致预期或历史增速，通常 5–20%。"
+            "Annual growth rate during the high-growth phase (FCF growth for FCFF/FCFE, DPS growth for DDM).\n\n"
+            "Reference analyst consensus or historical growth; typically 5–20%."
         ),
     )
 
     n_high_iv = st.number_input(
-        "高速增长年数　★必填",
+        "High Growth Period (years)  ★ Required",
         min_value=1, max_value=15, value=5, step=1,
         format="%d",
         help=(
-            "高速增长阶段持续年数，之后进入永续增长。\n\n"
-            "成熟公司建议 5 年，高成长型公司可取 7–10 年。"
+            "Number of years in the high-growth phase, after which the company enters perpetual growth.\n\n"
+            "5 years for mature companies; 7–10 years for high-growth companies."
         ),
     )
 
     g_stable_iv_pct = st.number_input(
-        "永续增长率 g_stable（%）　★必填",
+        "Perpetual Growth Rate g_stable (%)  ★ Required",
         min_value=0.0, max_value=5.0, value=2.5, step=0.1,
         format="%.1f",
         help=(
-            "高速增长结束后的永续增长率（约等于名义 GDP 增速）。\n\n"
-            "硬约束：系统自动强制 g_stable ≤ Rf，防止终值爆炸。\n"
-            "通常取 2–3%，不宜超过 Rf。"
+            "Perpetual growth rate after the high-growth phase ends (approximately nominal GDP growth).\n\n"
+            "Hard constraint: system enforces g_stable ≤ Rf to prevent terminal value explosion.\n"
+            "Typically 2–3%; should not exceed Rf."
         ),
     )
 
-# ── Session state 键后缀（按 ticker 隔离，避免换股残留）────────────────────
+# ── Session state key suffix (isolated per ticker, prevents stale state) ─────
 _sfx = f"__{ticker}"
 
 
 def _ss(key, default=None):
-    """读取 ticker 绑定的 session state 值。"""
+    """Read the session state value bound to the current ticker."""
     return st.session_state.get(key + _sfx, default)
 
 
-# ── 汇总 overrides（侧边栏 + 内联补填数据）─────────────────────────────────
+# ── Aggregate overrides (sidebar + inline fill-in data) ──────────────────────
 overrides = {
     "gEPS": gEPS_pct / 100,
-    "sector_beta_unlevered": sector_beta_unlevered,
+    "sector_beta_unlevered": sector_beta_unlevered if sector_beta_unlevered > 0 else None,
     "tax_rate": tax_rate_pct / 100,
     "rf": rf_pct / 100,
     "erp": erp_pct / 100,
@@ -160,11 +163,11 @@ overrides = {
     "g_stable_iv": g_stable_iv_pct / 100,
 }
 
-# 内联财报覆盖（从上次渲染的卡片输入框读取）
+# Inline financials override (read from card input widgets on previous render)
 _raw_override_map = {
     # key_suffix → overrides_key
     "raw_diluted_eps":          "raw_diluted_eps",
-    "raw_payout_pct":           None,   # 特殊处理（%→小数）
+    "raw_payout_pct":           None,   # special handling (% → decimal)
     "raw_operating_income_b":   "raw_operating_income_b",
     "raw_capex_b":              "raw_capex_b",
     "raw_da_b":                 "raw_da_b",
@@ -185,13 +188,13 @@ for sk, ok in _raw_override_map.items():
         elif ok:
             overrides[ok] = v
 
-# IV 子模型覆盖
+# IV sub-model override
 iv_model_choice = _ss("iv_model_sel", "auto")
 if iv_model_choice and iv_model_choice != "auto":
     overrides["iv_model_override"] = iv_model_choice.lower()
 
-# ── 计算 ────────────────────────────────────────────────────────────────────
-with st.spinner("拉取数据并计算中..."):
+# ── Compute ──────────────────────────────────────────────────────────────────
+with st.spinner("Fetching data and computing..."):
     try:
         from src.valmod.pipeline import run_valuation
         out = run_valuation(ticker, overrides)
@@ -203,12 +206,12 @@ if "error" in out:
     st.error(out["error"])
     st.stop()
 
-# ── 全局变量 ─────────────────────────────────────────────────────────────────
+# ── Global variables ──────────────────────────────────────────────────────────
 _MODEL_LABELS = {
-    "damodaran_pe": "PE 回归估值",
-    "damodaran_iv": "内在价值折现",
-    "ev_ebitda":    "EV/EBITDA 倍数法",
-    "ev_sales":     "EV/Sales 倍数法",
+    "damodaran_pe": "PE Regression",
+    "damodaran_iv": "Intrinsic Value Discounting",
+    "ev_ebitda":    "EV/EBITDA Multiple",
+    "ev_sales":     "EV/Sales Multiple",
 }
 
 r = out["final_range"]
@@ -216,69 +219,76 @@ p = out.get("current_price")
 mid = r.get("mid")
 recommended_model = out.get("recommended_model", "damodaran_pe")
 recommended_reason = out.get("recommended_reason", "")
-sector = out.get("sector") or "未知"
+sector = out.get("sector") or "Unknown"
 industry = out.get("industry") or ""
 mo = out.get("model_outputs", {})
 fin = out.get("financials", {})
 norm_out = out.get("normalized", {})
 industry_str = f" / {industry}" if industry else ""
 
-# ── 1. 核心结果 ──────────────────────────────────────────────────────────────
-st.subheader("估值结果")
+# ── 1. Core results ───────────────────────────────────────────────────────────
+st.subheader("Valuation Results")
 
-c1, c2, c3, c4, c5 = st.columns(5)
+c1, c2, c3 = st.columns(3)
 with c1:
-    st.metric("当前股价", f"${p:.2f}" if p is not None else "N/A")
+    st.metric("Current Price", f"${p:.2f}" if p is not None else "N/A")
 with c2:
-    st.metric("估值中枢", f"${mid:.1f}" if mid else "N/A")
+    if r.get("low") and r.get("high"):
+        st.metric("Valuation Range", f"${r['low']:.1f} – ${r['high']:.1f}")
+    else:
+        st.metric("Valuation Range", "N/A")
 with c3:
-    st.metric("估值区间", f"${r['low']:.1f} – ${r['high']:.1f}" if mid else "N/A")
-with c4:
-    if p and mid:
-        diff = (mid - p) / p
-        st.metric("中枢涨跌幅", f"{diff:+.1%}")
-with c5:
+    if p and r.get("low") and r.get("high"):
+        if p < r["low"]:
+            _gap = (r["low"] - p) / p
+            st.metric("vs. Range", f"Below Low by {_gap:.1%}")
+        elif p > r["high"]:
+            _gap = (p - r["high"]) / p
+            st.metric("vs. Range", f"Above High by {_gap:.1%}")
+        else:
+            _in_pct = (p - r["low"]) / (r["high"] - r["low"])
+            st.metric("vs. Range", f"In Range ({_in_pct:.0%})")
     if r.get("divergence_alert"):
-        st.warning("⚠ 相对估值与内在价值偏差 >20%，建议复核 WACC / 增长率")
+        st.warning("⚠ Relative valuation deviates >20% from intrinsic value — review WACC / growth rate")
 
-# ── 推荐模型摘要 ─────────────────────────────────────────────────────────────
+# ── Recommended model summary ─────────────────────────────────────────────────
 rec_label = _MODEL_LABELS.get(recommended_model, recommended_model)
 _iv_val = mo.get("damodaran_iv")
 _anchor_explain = (
-    "**估值中枢 = 内在价值折现（模型三）**，模型二（相对估值）作置信区间验证。"
+    "**Valuation range anchor: Intrinsic Value Discounting (Model 3)**, with Relative Valuation (Model 2) as a cross-check."
     if _iv_val is not None
-    else "内在价值折现模型未运行（请填入侧边栏模型三参数 Rf/ERP），当前中枢为可用模型均值。"
+    else "Intrinsic value model not run (fill in Rf / ERP in the sidebar). Range is derived from available models."
 )
 st.info(
-    f"**推荐估值模型：{rec_label}**　｜　行业：{sector}{industry_str}\n\n"
+    f"**Recommended Model: {rec_label}**  |  Sector: {sector}{industry_str}\n\n"
     f"{recommended_reason}\n\n"
-    f"{_anchor_explain}　·　*情景分析见页面底部*"
+    f"{_anchor_explain}  ·  *Scenario analysis at the bottom of the page*"
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ── 2. 各模型估值（新顺序：PE → 相对估值 → 内在价值）────────────────────────
+# ── 2. Model valuations (order: PE → Relative → IV) ──────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
-st.subheader("各模型估值")
+st.subheader("Individual Model Valuations")
 
-_t = tax_rate_pct / 100      # 税率（小数）
+_t = tax_rate_pct / 100      # tax rate (decimal)
 _rf = rf_pct / 100
 _erp = erp_pct / 100
 _g_stable = g_stable_iv_pct / 100
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 模型一：PE 回归估值
+# Model 1: PE Regression Valuation
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 dam_pe = mo.get("damodaran_pe")
 dam_det = mo.get("damodaran_pe_details") or {}
 
 with st.container(border=True):
-    st.markdown("**模型一：PE 回归估值**（Damodaran 2025年1月回归方程）")
+    st.markdown("**Model 1: PE Regression** (Damodaran January 2025 regression equation)")
 
-    # 公式
+    # Formula
     st.code(
-        "PE = 24.17 − 1.07 × β + 53.16 × gEPS + 1.08 × 派息率\n"
-        "目标价 = PE × 稀释EPS\n"
+        "PE = 24.17 − 1.07 × β + 53.16 × gEPS + 1.08 × Payout Ratio\n"
+        "Target Price = PE × Diluted EPS\n"
         "β_levered = β_unlevered × [1 + (1 − t) × D/E]",
         language="",
     )
@@ -286,212 +296,226 @@ with st.container(border=True):
     col_params, col_results = st.columns([1, 1])
 
     with col_params:
-        st.markdown("**参数一览**")
+        st.markdown("**Parameters**")
 
-        # 侧边栏参数
-        st.markdown(
-            f"| 参数 | 数值 | 来源 |\n"
-            f"|------|------|------|\n"
-            f"| gEPS | **{gEPS_pct:.1f}%** | 侧边栏 |\n"
-            f"| 行业无杠杆 β | **{sector_beta_unlevered:.2f}** | 侧边栏 |\n"
-            f"| 税率 t | **{tax_rate_pct:.0f}%** | 侧边栏 |"
-        )
-
-        # 加杠杆后 Beta（计算结果）
+        # Parameter table (combined display)
         beta_used = dam_det.get("beta_used")
         beta_src = dam_det.get("beta_source", "")
-        if beta_used is not None:
-            st.markdown(
-                f"| 参数 | 数值 | 来源 |\n"
-                f"|------|------|------|\n"
-                f"| 加杠杆后 β | **{beta_used:.3f}** | 自动推导 |"
+        fin_beta = fin.get("beta")
+
+        # Sector unlevered beta row: display depends on whether user filled it in
+        if sector_beta_unlevered > 0:
+            _beta_row = f"| Sector Unlevered β | **{sector_beta_unlevered:.2f}** | Sidebar (Damodaran) |"
+        elif fin_beta is not None:
+            _beta_row = f"| Sector Unlevered β | **0 → yfinance {fin_beta:.3f} (fallback)** | yfinance |"
+        else:
+            _beta_row = f"| Sector Unlevered β | **0 → yfinance beta unavailable** | — |"
+
+        _levered_row = f"| Levered β (incl. D/E) | **{beta_used:.3f}** | Auto-derived |" if beta_used is not None else ""
+
+        st.markdown(
+            f"| Parameter | Value | Source |\n"
+            f"|-----------|-------|--------|\n"
+            f"| gEPS | **{gEPS_pct:.1f}%** | Sidebar |\n"
+            f"{_beta_row}\n"
+            + (f"{_levered_row}\n" if _levered_row else "")
+            + f"| Tax Rate t | **{tax_rate_pct:.0f}%** | Sidebar |"
+        )
+
+        if sector_beta_unlevered == 0:
+            st.caption(
+                "💡 Sector unlevered beta: https://pages.stern.nyu.edu/~adamodar/New_Home_Page/datafile/Betas.html\n"
+                "(Damodaran website, updated every January)"
             )
 
-        # 派息率（财报）
+        # Payout ratio (from financials)
         fin_payout = fin.get("payout_ratio")
         if fin_payout is not None:
             st.markdown(
-                f"| 参数 | 数值 | 来源 |\n"
-                f"|------|------|------|\n"
-                f"| 派息率 | **{fin_payout:.1%}** | 财报读取 |"
+                f"| Parameter | Value | Source |\n"
+                f"|-----------|-------|--------|\n"
+                f"| Payout Ratio | **{fin_payout:.1%}** | Financials |"
             )
         else:
-            st.markdown("⚠ **派息率** 未从财报读取到（若公司不派息，可视为 0%）")
+            st.markdown("⚠ **Payout Ratio** not found in financials (treat as 0% if company pays no dividends)")
             st.number_input(
-                "补填：派息率（%）",
+                "Fill in: Payout Ratio (%)",
                 min_value=0.0, max_value=100.0, value=0.0, step=0.5,
                 format="%.1f",
                 key="raw_payout_pct" + _sfx,
-                help="填入后自动重算。0% = 无股息，正常适用于成长型公司。",
+                help="Will auto-recalculate after input. 0% = no dividend, normal for growth companies.",
             )
 
-        # 稀释 EPS（财报，最关键）
+        # Diluted EPS (from financials, most critical)
         fin_eps = fin.get("diluted_eps")
         if fin_eps is not None and fin_eps > 0:
             st.markdown(
-                f"| 参数 | 数值 | 来源 |\n"
-                f"|------|------|------|\n"
-                f"| 稀释 EPS | **${fin_eps:.2f}** | 财报读取 |"
+                f"| Parameter | Value | Source |\n"
+                f"|-----------|-------|--------|\n"
+                f"| Diluted EPS | **${fin_eps:.2f}** | Financials |"
             )
         else:
-            st.markdown("⚠ **稀释 EPS** 未读取到或为负（必须 > 0 才能计算目标价）")
+            st.markdown("⚠ **Diluted EPS** not found or negative (must be > 0 to compute target price)")
             st.number_input(
-                "补填：稀释 EPS（$/股）",
-                min_value=0.01, max_value=1000.0, value=1.0, step=0.01,
+                "Fill in: Diluted EPS ($/share)",
+                min_value=0.0, max_value=1000.0, value=0.0, step=0.01,
                 format="%.2f",
                 key="raw_diluted_eps" + _sfx,
-                help="来自年报 EPS（摊薄/稀释）。如 AAPL 2024 ≈ $6.08。",
+                help="From annual report EPS (diluted). E.g. AAPL 2024 ≈ $6.08. Leave 0 to not override.",
             )
 
     with col_results:
-        st.markdown("**计算结果**")
+        st.markdown("**Results**")
         if dam_pe is not None:
             st.metric(
-                "目标价",
+                "Target Price",
                 f"${dam_pe:.1f}",
                 delta=f"{(dam_pe - p) / p:+.1%}" if p else None,
             )
             d2, d3, d4 = st.columns(3)
             with d2:
-                st.metric("隐含 PE", f"{dam_det.get('pe_implied', 0):.1f}x")
+                st.metric("Implied PE", f"{dam_det.get('pe_implied', 0):.1f}x")
             with d3:
-                st.metric("β（加杠杆）", f"{dam_det.get('beta_used', 0):.3f}")
+                st.metric("β (levered)", f"{dam_det.get('beta_used', 0):.3f}")
             with d4:
-                st.metric("派息率", f"{dam_det.get('payout_ratio', 0):.1%}")
+                st.metric("Payout Ratio", f"{dam_det.get('payout_ratio', 0):.1%}")
             if dam_det.get("formula"):
-                st.caption(f"公式验算：{dam_det['formula']}")
+                st.caption(f"Formula check: {dam_det['formula']}")
             if beta_src:
-                st.caption(f"Beta来源：{beta_src}")
+                st.caption(f"Beta source: {beta_src}")
         else:
-            st.warning("模型无法计算目标价")
+            st.warning("Model cannot compute target price")
             missing_hints = []
             if fin_eps is None or (fin_eps is not None and fin_eps <= 0):
-                missing_hints.append("稀释EPS（请在左侧补填）")
+                missing_hints.append("Diluted EPS (fill in on the left)")
             if beta_used is None:
-                missing_hints.append("Beta（检查市值数据）")
+                missing_hints.append("Beta (check market cap data)")
             if missing_hints:
-                st.caption("缺少：" + "、".join(missing_hints))
+                st.caption("Missing: " + ", ".join(missing_hints))
             err_msg = dam_det.get("note", dam_det.get("error", ""))
             if err_msg:
-                st.caption(f"详情：{err_msg}")
+                st.caption(f"Details: {err_msg}")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 模型二：相对估值（基本面推导倍数）
+# Model 2: Relative Valuation (fundamentals-derived multiples)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 mult_det = mo.get("multiples_details") or {}
 ev_ebitda_val = mo.get("ev_ebitda")
 ev_sales_val = mo.get("ev_sales")
 iv_anchor = mo.get("damodaran_iv")
 
-# 判断 WACC 来源
+# Determine WACC source
 if iv_anchor is not None:
-    _wacc_source = "模型三（内在价值）推导"
+    _wacc_source = "Model 3 (intrinsic value) derived"
 elif rf_pct:
-    _wacc_source = "Rf/ERP 参数计算"
+    _wacc_source = "Rf / ERP parameter calculation"
 else:
-    _wacc_source = "默认回退值（10%）"
+    _wacc_source = "Default fallback (10%)"
 
 with st.container(border=True):
-    st.markdown("**模型二：相对估值（基本面推导倍数 · 置信区间验证）**")
-    st.caption("不作独立估值结论——与内在价值偏差 > 20% 时触发告警，提示复核假设。")
+    st.markdown("**Model 2: Relative Valuation (fundamentals-derived multiples · confidence check)**")
+    st.caption("Not used as a standalone conclusion — triggers a warning when deviation from intrinsic value exceeds 20%, prompting a review of assumptions.")
 
-    # 公式
+    # Formula
     st.code(
-        "EV/EBIT = (1 − t) × (1 − RR) / (WACC − g)     ← EBIT ≈ EBITDA 近似\n"
-        "EV/Sales = 税后EBIT利润率 × (1 − RR) × (1 + g) / (WACC − g)\n"
-        "RR（再投资率）= max(CapEx − D&A, 0) / NOPAT",
+        "EV/EBIT = (1 − t) × (1 − RR) / (WACC − g)     ← EBIT ≈ EBITDA approximation\n"
+        "EV/Sales = After-tax EBIT margin × (1 − RR) × (1 + g) / (WACC − g)\n"
+        "RR (Reinvestment Rate) = max(CapEx − D&A, 0) / NOPAT",
         language="",
     )
 
     col_params2, col_results2 = st.columns([1, 1])
 
     with col_params2:
-        st.markdown("**参数一览**")
+        st.markdown("**Parameters**")
 
-        # WACC 及宏观参数
+        # WACC and macro parameters
         wacc_used = mult_det.get("wacc_used")
         g_used = mult_det.get("g_used")
         rr_used = mult_det.get("reinvestment_rate")
         atm_used = mult_det.get("after_tax_margin")
 
         macro_lines = (
-            f"| 参数 | 数值 | 来源 |\n"
-            f"|------|------|------|\n"
+            f"| Parameter | Value | Source |\n"
+            f"|-----------|-------|--------|\n"
         )
         if wacc_used is not None:
             macro_lines += f"| WACC / re | **{wacc_used:.2%}** | {_wacc_source} |\n"
         macro_lines += (
-            f"| g (永续增长率) | **{g_stable_iv_pct:.1f}%** | 侧边栏 |\n"
-            f"| 税率 t | **{tax_rate_pct:.0f}%** | 侧边栏 |"
+            f"| g (perpetual growth) | **{g_stable_iv_pct:.1f}%** | Sidebar |\n"
+            f"| Tax Rate t | **{tax_rate_pct:.0f}%** | Sidebar |"
         )
         st.markdown(macro_lines)
 
         if rr_used is not None:
             st.markdown(
-                f"| 参数 | 数值 | 来源 |\n"
-                f"|------|------|------|\n"
-                f"| 再投资率 RR | **{rr_used:.1%}** | 自动推导 |\n"
-                + (f"| 税后EBIT利润率 | **{atm_used:.1%}** | 自动推导 |" if atm_used is not None else "")
+                f"| Parameter | Value | Source |\n"
+                f"|-----------|-------|--------|\n"
+                f"| Reinvestment Rate RR | **{rr_used:.1%}** | Auto-derived |\n"
+                + (f"| After-tax EBIT Margin | **{atm_used:.1%}** | Auto-derived |" if atm_used is not None else "")
             )
 
-        st.markdown("**财报数据**")
+        st.markdown("**Financials**")
 
         # EBITDA
         fin_ebitda = fin.get("ebitda_b")
         if fin_ebitda is not None:
-            st.markdown(f"• EBITDA：**${fin_ebitda:.1f}B** ← 财报")
+            st.markdown(f"• EBITDA: **${fin_ebitda:.1f}B** ← financials")
         else:
-            st.markdown("⚠ **EBITDA** 未读取到")
+            st.markdown("⚠ **EBITDA** not found")
             st.number_input(
-                "补填：EBITDA（$B）",
-                min_value=0.1, value=10.0, step=0.5, format="%.1f",
+                "Fill in: EBITDA ($B)",
+                min_value=0.0, value=0.0, step=0.5, format="%.1f",
                 key="raw_ebitda_b" + _sfx,
+                help="Leave 0 to not override.",
             )
 
         # Revenue
         fin_rev = fin.get("revenue_b")
         if fin_rev is not None:
-            st.markdown(f"• 营收：**${fin_rev:.1f}B** ← 财报")
+            st.markdown(f"• Revenue: **${fin_rev:.1f}B** ← financials")
         else:
-            st.markdown("⚠ **营收** 未读取到")
+            st.markdown("⚠ **Revenue** not found")
             st.number_input(
-                "补填：营收（$B）",
-                min_value=0.1, value=50.0, step=1.0, format="%.1f",
+                "Fill in: Revenue ($B)",
+                min_value=0.0, value=0.0, step=1.0, format="%.1f",
                 key="raw_revenue_b" + _sfx,
+                help="Leave 0 to not override.",
             )
 
         # EBIT
         fin_ebit = fin.get("operating_income_b")
         if fin_ebit is not None:
-            st.markdown(f"• EBIT（营业利润）：**${fin_ebit:.1f}B** ← 财报")
+            st.markdown(f"• EBIT (Operating Income): **${fin_ebit:.1f}B** ← financials")
         else:
-            st.markdown("⚠ **EBIT（营业利润）** 未读取到")
+            st.markdown("⚠ **EBIT (Operating Income)** not found")
             st.number_input(
-                "补填：EBIT（$B）",
-                min_value=0.0, value=5.0, step=0.5, format="%.1f",
+                "Fill in: EBIT ($B)",
+                min_value=0.0, value=0.0, step=0.5, format="%.1f",
                 key="raw_operating_income_b" + _sfx,
+                help="Leave 0 to not override.",
             )
 
-        # CapEx & D&A（显示，通常有数据）
+        # CapEx & D&A (display, usually available)
         fin_capex = fin.get("capex_b")
         fin_da = fin.get("da_b")
         if fin_capex is not None:
-            st.markdown(f"• CapEx：**${fin_capex:.1f}B** ← 财报")
+            st.markdown(f"• CapEx: **${fin_capex:.1f}B** ← financials")
         if fin_da is not None:
-            st.markdown(f"• D&A：**${fin_da:.1f}B** ← 财报")
+            st.markdown(f"• D&A: **${fin_da:.1f}B** ← financials")
 
-        # 净债务
+        # Net debt
         _net_debt_b = norm_out.get("net_debt")
         if _net_debt_b is not None:
-            st.markdown(f"• 净债务：**${_net_debt_b / 1e9:.1f}B** ← 财报")
+            st.markdown(f"• Net Debt: **${_net_debt_b / 1e9:.1f}B** ← financials")
 
     with col_results2:
-        st.markdown("**计算结果**")
+        st.markdown("**Results**")
         any_rel = False
         for label, key, mult_key in [
-            ("EV/EBITDA 法", "ev_ebitda", "implied_ev_ebitda_mult"),
-            ("EV/Sales 法",  "ev_sales",  "implied_ev_sales_mult"),
+            ("EV/EBITDA Method", "ev_ebitda", "implied_ev_ebitda_mult"),
+            ("EV/Sales Method",  "ev_sales",  "implied_ev_sales_mult"),
         ]:
             v = mo.get(key)
             mult_v = mult_det.get(mult_key)
@@ -499,260 +523,335 @@ with st.container(border=True):
                 delta_str = f"{(v - p) / p:+.1%}" if p else None
                 st.metric(label, f"${v:.1f}", delta=delta_str)
                 if mult_v:
-                    st.caption(f"隐含倍数：**{mult_v:.1f}×**")
+                    st.caption(f"Implied multiple: **{mult_v:.1f}×**")
                 if iv_anchor and iv_anchor > 0:
                     dev = abs(v - iv_anchor) / iv_anchor
                     if dev > 0.20:
                         st.caption(
-                            f"⚠ 与内在价值偏差 **{dev:.0%}**，建议复核 WACC"
-                            f"（{mult_det.get('wacc_used', 0):.2%}）或 g"
+                            f"⚠ Deviation from intrinsic value: **{dev:.0%}** — review WACC"
+                            f" ({mult_det.get('wacc_used', 0):.2%}) or g"
                         )
                 any_rel = True
 
         if not any_rel:
-            st.warning("相对估值不可用")
-            missing_rel = []
-            if fin.get("ebitda_b") is None:
-                missing_rel.append("EBITDA（请补填）")
-            if fin.get("revenue_b") is None:
-                missing_rel.append("营收（请补填）")
-            if missing_rel:
-                st.caption("缺少：" + "、".join(missing_rel))
+            st.warning("Relative valuation unavailable")
+            _has_ebitda = fin.get("ebitda_b") is not None
+            _has_rev    = fin.get("revenue_b") is not None
+            _impl_mult  = mult_det.get("implied_ev_ebitda_mult")
+            _rr         = mult_det.get("reinvestment_rate")
+            _net_debt_b = (norm_out.get("net_debt") or 0) / 1e9
+
+            if _impl_mult is not None and _has_ebitda:
+                # Model ran but equity value is negative (implied EV < net debt)
+                _ev_b = _impl_mult * fin.get("ebitda_b", 0)
+                if _ev_b < _net_debt_b and _net_debt_b > 0:
+                    st.caption(
+                        f"**Reason: Negative equity value**\n\n"
+                        f"• Implied EV/EBITDA multiple = **{_impl_mult:.2f}×** (low; typical reference 8–15×)\n"
+                        f"• Implied EV = **${_ev_b:.1f}B**  <  Net Debt = **${_net_debt_b:.1f}B**\n"
+                        f"• Reinvestment Rate = **{_rr:.0%}** (high reinvestment compresses the multiple)\n\n"
+                        f"Likely cause: CapEx far exceeds D&A, pushing reinvestment rate to the cap (95%).\n"
+                        f"Consider using **Model 3 (Intrinsic Value Discounting)** instead."
+                    )
+                elif fin.get("shares_b") is None or (norm_out.get("shares_diluted") or 0) <= 0:
+                    st.caption("Reason: **Diluted shares** missing — cannot convert to per-share value (fill in below).")
+                else:
+                    st.caption(f"Multiple computed ({_impl_mult:.1f}×), but per-share equity value is abnormal — check net debt data.")
+            else:
+                missing_rel = []
+                if not _has_ebitda:
+                    missing_rel.append("EBITDA (fill in on the left)")
+                if not _has_rev:
+                    missing_rel.append("Revenue (fill in on the left)")
+                if missing_rel:
+                    st.caption("Missing data: " + ", ".join(missing_rel))
+                elif mult_det.get("wacc_used") is None:
+                    st.caption("WACC not computed — fill in Rf / ERP in the sidebar.")
 
         if wacc_used:
             st.caption(
-                f"推导参数：WACC={wacc_used:.2%}  g={g_used:.2%}"
-                + (f"  再投资率={rr_used:.1%}" if rr_used is not None else "")
-                + (f"  税后EBIT利润率={atm_used:.1%}" if atm_used is not None else "")
+                f"Derived parameters: WACC={wacc_used:.2%}  g={g_used:.2%}"
+                + (f"  RR={rr_used:.1%}" if rr_used is not None else "")
+                + (f"  After-tax EBIT margin={atm_used:.1%}" if atm_used is not None else "")
             )
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 模型三：内在价值折现（FCFF / FCFE / DDM）
+# Model 3: Intrinsic Value Discounting (FCFF / FCFE / DDM)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 iv_val = mo.get("damodaran_iv")
 iv_det = mo.get("damodaran_iv_details") or {}
 _IV_MODEL_NAMES = {
-    "fcff": "FCFF（公司自由现金流）",
-    "fcfe": "FCFE（股权自由现金流）",
-    "ddm":  "DDM（股利贴现）",
+    "fcff": "FCFF (Free Cash Flow to Firm)",
+    "fcfe": "FCFE (Free Cash Flow to Equity)",
+    "ddm":  "DDM (Dividend Discount Model)",
 }
 iv_model_used = iv_det.get("model_used", "").lower()
-iv_model_label = _IV_MODEL_NAMES.get(iv_model_used, iv_model_used.upper() or "未运行")
+iv_model_label = _IV_MODEL_NAMES.get(iv_model_used, iv_model_used.upper() or "Not run")
 auto_model = iv_det.get("auto_model", iv_model_used)
 is_manual_override = iv_det.get("is_manual_override", False)
 
-with st.container(border=True):
-    st.markdown("**模型三：内在价值折现**（估值中枢锚点）")
+# _display_model: used for displaying the formula and financial data sections.
+# When model fails (iv_model_used=""), falls back to the radio selection to avoid blank formula area.
+_radio_val_iv = (_ss("iv_model_sel", "auto") or "auto").lower()
+_display_model = iv_model_used if iv_model_used else (
+    _radio_val_iv if _radio_val_iv != "auto" else ""
+)
 
-    # ── 子模型选择器（radio） ──────────────────────────────────────────────
-    _auto_label = f"自动推荐（{auto_model.upper()}）" if auto_model else "自动推荐"
+with st.container(border=True):
+    st.markdown("**Model 3: Intrinsic Value Discounting** (valuation range anchor)")
+
+    # ── Sub-model selector (radio) ─────────────────────────────────────────
+    _auto_label = f"Auto-recommend ({auto_model.upper()})" if auto_model else "Auto-recommend"
     _iv_radio_opts = ["auto", "FCFF", "FCFE", "DDM"]
     _iv_radio_labels = {
         "auto":  _auto_label,
-        "FCFF":  "FCFF — 公司自由现金流",
-        "FCFE":  "FCFE — 股权自由现金流",
-        "DDM":   "DDM — 股利贴现",
+        "FCFF":  "FCFF — Free Cash Flow to Firm",
+        "FCFE":  "FCFE — Free Cash Flow to Equity",
+        "DDM":   "DDM — Dividend Discount Model",
     }
     st.radio(
-        "折现子模型",
+        "Discounting sub-model",
         options=_iv_radio_opts,
         format_func=lambda x: _iv_radio_labels[x],
         horizontal=True,
         key="iv_model_sel" + _sfx,
         help=(
-            "**自动推荐**：系统依据财务特征自动选择最适合的子模型\n\n"
-            "• DDM：派息率>70% 且 债/市值<50% → 成熟现金奶牛\n"
-            "• FCFF：亏损 或 债/市值>80% → 高杠杆/亏损公司\n"
-            "• FCFE：其余情况 → 杠杆稳定且盈利的一般企业\n\n"
-            "可手动切换对比不同子模型的估值差异。"
+            "**Auto-recommend**: system automatically selects the most suitable sub-model based on financial characteristics\n\n"
+            "• DDM: payout ratio >70% and debt/market cap <50% → mature cash cow\n"
+            "• FCFF: loss-making or debt/market cap >80% → high-leverage / loss-making company\n"
+            "• FCFE: all other cases → stable leverage with positive earnings\n\n"
+            "You can manually switch to compare valuations across sub-models."
         ),
     )
 
-    # ── 公式（按当前子模型显示）──────────────────────────────────────────────
-    if iv_model_used == "fcff":
+    # ── Formula (shown per selected sub-model) ─────────────────────────────
+    if _display_model == "fcff":
         st.code(
             "FCFF = EBIT × (1−t) − Net CapEx − ΔNon-cash WC\n"
             "WACC = re × E/(D+E) + rd × (1−t) × D/(D+E)\n"
-            "re = Rf + β × ERP  ，  rd = Rf + 违约利差\n"
+            "re = Rf + β × ERP  ,  rd = Rf + Default Spread\n"
             "TV = FCFF_n × (1+g_stable) / (WACC − g_stable)\n"
-            "每股价值 = (EV − 总债务 + 现金) / 稀释股本",
+            "Value per share = (EV − Total Debt + Cash) / Diluted Shares",
             language="",
         )
-    elif iv_model_used == "fcfe":
+    elif _display_model == "fcfe":
         st.code(
-            "FCFE = 净利润 + D&A − CapEx − ΔWC + 净债务融资额\n"
+            "FCFE = Net Income + D&A − CapEx − ΔWC + Net Debt Issuance\n"
             "re = Rf + β × ERP\n"
             "TV = FCFE_n × (1+g_stable) / (re − g_stable)\n"
-            "每股价值 = PV(FCFE高速增长期) + PV(TV)",
+            "Value per share = PV(FCFE high-growth) + PV(TV)",
             language="",
         )
-    elif iv_model_used == "ddm":
+    elif _display_model == "ddm":
         st.code(
-            "DPS₀ = 已付股息 / 股本  或  稀释EPS × 派息率\n"
+            "DPS₀ = Dividends Paid / Shares  or  Diluted EPS × Payout Ratio\n"
             "re = Rf + β × ERP\n"
-            "TV = DPS_n × (1+g_stable) / (re − g_stable)  [约束：g_stable ≤ Rf]\n"
-            "每股价值 = Σ DPS_t/(1+re)^t + TV/(1+re)^n",
+            "TV = DPS_n × (1+g_stable) / (re − g_stable)  [constraint: g_stable ≤ Rf]\n"
+            "Value per share = Σ DPS_t/(1+re)^t + TV/(1+re)^n",
             language="",
         )
     else:
-        st.caption("请填写侧边栏中的 Rf / ERP 等参数，启动内在价值折现模型。")
+        st.caption("Fill in Rf / ERP and other parameters in the sidebar to run the intrinsic value model.")
 
     col_p3, col_r3 = st.columns([1, 1])
 
     with col_p3:
-        # ── 宏观参数（来自侧边栏）──────────────────────────────────────────
-        st.markdown("**宏观参数（侧边栏）**")
+        # ── Macro parameters (from sidebar) ───────────────────────────────
+        st.markdown("**Macro Parameters (Sidebar)**")
         macro3 = (
-            f"| 参数 | 数值 |\n"
-            f"|------|------|\n"
-            f"| Rf（无风险利率）| **{rf_pct:.1f}%** |\n"
-            f"| ERP（股权风险溢价）| **{erp_pct:.1f}%** |\n"
-            f"| 行业无杠杆 β | **{sector_beta_unlevered:.2f}** |\n"
-            f"| 高速增长率 g_high | **{g_high_iv_pct:.1f}%** |\n"
-            f"| 高速增长年数 n | **{int(n_high_iv)} 年** |\n"
-            f"| 永续增长率 g_stable | **{g_stable_iv_pct:.1f}%**（≤ Rf 约束）|"
+            f"| Parameter | Value |\n"
+            f"|-----------|-------|\n"
+            f"| Rf (risk-free rate) | **{rf_pct:.1f}%** |\n"
+            f"| ERP (equity risk premium) | **{erp_pct:.1f}%** |\n"
+            f"| Sector Unlevered β | **{sector_beta_unlevered:.2f}** |\n"
+            f"| High Growth Rate g_high | **{g_high_iv_pct:.1f}%** |\n"
+            f"| High Growth Period n | **{int(n_high_iv)} yrs** |\n"
+            f"| Perpetual Growth g_stable | **{g_stable_iv_pct:.1f}%** (≤ Rf constraint) |"
         )
-        if iv_model_used == "fcff":
-            macro3 += f"\n| 违约利差 | **{default_spread_pct:.1f}%** |"
+        if _display_model == "fcff":
+            macro3 += f"\n| Default Spread | **{default_spread_pct:.1f}%** |"
         st.markdown(macro3)
 
-        # ── 财报数据（按子模型展示不同字段）───────────────────────────────
-        st.markdown("**财报数据**")
+        # ── Financials (different fields per sub-model) ────────────────────
+        st.markdown("**Financials**")
 
-        def _show_or_input(label, fin_key, ss_key, unit="$B", min_v=0.0, default_v=10.0, step=0.5, fmt="%.1f"):
+        def _show_or_input(label, fin_key, ss_key, unit="$B", min_v=0.0, default_v=0.0, step=0.5, fmt="%.1f"):
             val = fin.get(fin_key)
             if val is not None and val > 0:
-                st.markdown(f"• {label}：**${val:.2f}B** ← 财报")
+                st.markdown(f"• {label}: **${val:.2f}B** ← financials")
             else:
-                st.markdown(f"⚠ **{label}** 未读取到")
+                st.markdown(f"⚠ **{label}** not found")
                 st.number_input(
-                    f"补填：{label}（{unit}）",
+                    f"Fill in: {label} ({unit})",
                     min_value=min_v, value=default_v, step=step, format=fmt,
                     key=ss_key + _sfx,
+                    help="Leave 0 to not override financials.",
                 )
 
         def _show_val_optional(label, fin_key, unit="$B", allow_zero=False):
-            """显示数值（允许 None 或 0，不要求用户补填）。"""
+            """Display value (allow None or 0, no user input required)."""
             val = fin.get(fin_key)
             if val is not None:
-                st.markdown(f"• {label}：**${val:.2f}B** ← 财报")
+                st.markdown(f"• {label}: **${val:.2f}B** ← financials")
             else:
-                st.markdown(f"• {label}：— 未读取（按 0 处理）")
+                st.markdown(f"• {label}: — not found (treated as 0)")
 
-        if iv_model_used == "fcff":
-            _show_or_input("EBIT（营业利润）", "operating_income_b", "raw_operating_income_b", min_v=0.01)
-            _show_or_input("CapEx", "capex_b", "raw_capex_b", default_v=5.0)
-            _show_or_input("D&A（折旧摊销）", "da_b", "raw_da_b", default_v=3.0)
-            _show_or_input("总债务", "total_debt_b", "raw_total_debt_b", default_v=50.0)
-            _show_or_input("现金及等价物", "cash_b", "raw_cash_b", default_v=20.0)
-            _show_or_input("稀释股本", "shares_b", "raw_shares_b", unit="B股", default_v=1.0)
-            _show_val_optional("营运资本变动（ΔWC）", "working_capital_b", allow_zero=True)
+        if _display_model == "fcff":
+            _show_or_input("EBIT (Operating Income)", "operating_income_b", "raw_operating_income_b")
+            _show_or_input("CapEx", "capex_b", "raw_capex_b")
+            _show_or_input("D&A (Depreciation & Amortization)", "da_b", "raw_da_b")
+            _show_or_input("Total Debt", "total_debt_b", "raw_total_debt_b")
+            _show_or_input("Cash & Equivalents", "cash_b", "raw_cash_b")
+            _show_or_input("Diluted Shares", "shares_b", "raw_shares_b", unit="B shares")
+            _show_val_optional("Change in Working Capital (ΔWC)", "working_capital_b", allow_zero=True)
 
-        elif iv_model_used == "fcfe":
-            _show_or_input("净利润", "net_income_b", "raw_net_income_b", min_v=0.01)
-            _show_or_input("D&A（折旧摊销）", "da_b", "raw_da_b", default_v=3.0)
-            _show_or_input("CapEx", "capex_b", "raw_capex_b", default_v=5.0)
-            _show_or_input("稀释股本", "shares_b", "raw_shares_b", unit="B股", default_v=1.0)
-            # 净债务融资额（可为负，允许 0）
+        elif _display_model == "fcfe":
+            _show_or_input("Net Income", "net_income_b", "raw_net_income_b")
+            _show_or_input("D&A (Depreciation & Amortization)", "da_b", "raw_da_b")
+            _show_or_input("CapEx", "capex_b", "raw_capex_b")
+            _show_or_input("Diluted Shares", "shares_b", "raw_shares_b", unit="B shares")
+            # Net debt issuance (can be negative, allow 0)
             fin_ndi = fin.get("net_debt_issuance_b")
             if fin_ndi is not None:
-                st.markdown(f"• 净债务融资额：**${fin_ndi:.2f}B** ← 财报（负=还债）")
+                st.markdown(f"• Net Debt Issuance: **${fin_ndi:.2f}B** ← financials (negative = repayment)")
             else:
-                st.markdown("• 净债务融资额：— 未读取（按 0 处理）")
+                st.markdown("• Net Debt Issuance: — not found (treated as 0)")
                 st.number_input(
-                    "补填：净债务融资额（$B）",
+                    "Fill in: Net Debt Issuance ($B)",
                     min_value=-200.0, max_value=200.0, value=0.0, step=1.0, format="%.1f",
                     key="raw_net_debt_issuance_b" + _sfx,
-                    help="净新增借债（借入-偿还）。正=新增借债，负=净还债。",
+                    help="Net new borrowing (proceeds minus repayments). Positive = net new debt, negative = net repayment.",
                 )
 
-        elif iv_model_used == "ddm":
+        elif _display_model == "ddm":
             fin_div = fin.get("dividends_paid_b")
             fin_eps = fin.get("diluted_eps")
             fin_payout = fin.get("payout_ratio")
             if fin_div is not None and fin_div > 0:
-                st.markdown(f"• 已付股息总额：**${fin_div:.2f}B** ← 财报")
+                st.markdown(f"• Total Dividends Paid: **${fin_div:.2f}B** ← financials")
             elif fin_eps and fin_eps > 0 and fin_payout:
-                st.markdown(f"• DPS₀ 由 EPS(${fin_eps:.2f}) × 派息率({fin_payout:.1%}) 估算")
+                st.markdown(f"• DPS₀ estimated from EPS (${fin_eps:.2f}) × Payout Ratio ({fin_payout:.1%})")
             else:
-                st.markdown("⚠ **股息数据（已付股息 / DPS）** 未读取到")
+                st.markdown("⚠ **Dividend data (dividends paid / DPS)** not found")
                 st.number_input(
-                    "补填：已付股息总额（$B）",
-                    min_value=0.0, value=1.0, step=0.1, format="%.2f",
+                    "Fill in: Total Dividends Paid ($B)",
+                    min_value=0.0, value=0.0, step=0.1, format="%.2f",
                     key="raw_dividends_paid_b" + _sfx,
+                    help="Leave 0 to not override.",
                 )
-            _show_or_input("稀释股本", "shares_b", "raw_shares_b", unit="B股", default_v=1.0)
+            _show_or_input("Diluted Shares", "shares_b", "raw_shares_b", unit="B shares")
 
     with col_r3:
-        st.markdown("**计算结果**")
+        st.markdown("**Results**")
         if iv_val is not None:
             st.metric(
-                "目标价",
+                "Target Price",
                 f"${iv_val:.1f}",
                 delta=f"{(iv_val - p) / p:+.1%}" if p else None,
             )
             r3a, r3b = st.columns(2)
             with r3a:
-                if iv_model_used == "fcff":
+                if _display_model == "fcff":
                     st.metric("WACC", f"{iv_det.get('wacc', 0):.2%}")
                 else:
-                    st.metric("股权成本 re", f"{iv_det.get('re', 0):.2%}")
+                    st.metric("Cost of Equity re", f"{iv_det.get('re', 0):.2%}")
             with r3b:
-                st.metric("加杠杆 β", f"{iv_det.get('beta_levered', 0):.3f}")
+                st.metric("Levered β", f"{iv_det.get('beta_levered', 0):.3f}")
 
             tp = iv_det.get("terminal_pct")
             color_iv = "🔴" if tp and tp > 0.70 else "🟡" if tp and tp > 0.55 else "🟢"
-            st.metric("终值占比", f"{color_iv} {tp:.0%}" if tp is not None else "N/A")
+            st.metric("Terminal Value %", f"{color_iv} {tp:.0%}" if tp is not None else "N/A")
 
-            # 现金流明细
+            # Cash flow detail
             if iv_model_used == "fcff" and iv_det.get("fcff_0_B") is not None:
                 st.caption(
                     f"FCFF₀ = ${iv_det['fcff_0_B']:.2f}B  "
-                    f"净CapEx = ${iv_det.get('net_capex_B', 0):.2f}B  "
-                    f"权益价值 = ${iv_det.get('equity_value_B', 0):.1f}B"
+                    f"Net CapEx = ${iv_det.get('net_capex_B', 0):.2f}B  "
+                    f"Equity Value = ${iv_det.get('equity_value_B', 0):.1f}B"
                 )
             elif iv_model_used == "fcfe" and iv_det.get("fcfe_0_B") is not None:
                 st.caption(
                     f"FCFE₀ = ${iv_det['fcfe_0_B']:.2f}B  "
-                    f"净利润 = ${iv_det.get('net_income_B', 0):.2f}B"
+                    f"Net Income = ${iv_det.get('net_income_B', 0):.2f}B"
                 )
             elif iv_model_used == "ddm" and iv_det.get("dps_0") is not None:
                 st.caption(
-                    f"DPS₀ = ${iv_det['dps_0']:.2f}/股  "
-                    f"来源：{iv_det.get('dps_source', '')}"
+                    f"DPS₀ = ${iv_det['dps_0']:.2f}/share  "
+                    f"Source: {iv_det.get('dps_source', '')}"
                 )
 
             st.caption(
-                f"g_stable = {iv_det.get('g_stable_used', 0):.2%}  ｜  "
-                f"{'手动指定' if is_manual_override else '自动选择'} {iv_model_used.upper()}\n\n"
+                f"g_stable = {iv_det.get('g_stable_used', 0):.2%}  |  "
+                f"{'Manual override' if is_manual_override else 'Auto-selected'} {iv_model_used.upper()}\n\n"
                 f"{iv_det.get('selection_reason', '')}"
             )
         else:
-            err = iv_det.get("error", "参数不足（请填入侧边栏 Rf/ERP 等参数）")
-            st.warning(f"模型不可用：{err}")
+            _err = iv_det.get("error", "")
+            _model_ran = bool(iv_det.get("model_used", ""))
+            _disp = (_display_model or iv_model_used).lower()
+
+            if _err:
+                # Exception info (captured and injected by registry.py)
+                st.warning(f"Model computation error: {_err}")
+            elif _model_ran or _disp:
+                # Model ran but returned None — give specific diagnosis per sub-model
+                _diag = []
+                if _disp == "fcff":
+                    _ev_b2 = iv_det.get("equity_value_B")
+                    if _ev_b2 is not None and _ev_b2 <= 0:
+                        _nd2 = (norm_out.get("net_debt") or 0) / 1e9
+                        _diag.append(f"Negative equity value (EV < Net Debt ${_nd2:.1f}B)")
+                    if fin.get("operating_income_b") is None:
+                        _diag.append("EBIT (Operating Income) missing → fill in Model 3 financials section")
+                    if fin.get("shares_b") is None:
+                        _diag.append("Diluted shares missing → fill in")
+                elif _disp == "fcfe":
+                    _ni = fin.get("net_income_b")
+                    if _ni is None:
+                        _diag.append("Net income missing → fill in Model 3 financials section")
+                    elif _ni <= 0:
+                        _diag.append(f"Net income is negative (${_ni:.2f}B); FCFE discounted value is negative")
+                    if fin.get("shares_b") is None:
+                        _diag.append("Diluted shares missing → fill in")
+                elif _disp == "ddm":
+                    _div = fin.get("dividends_paid_b")
+                    _eps2 = fin.get("diluted_eps")
+                    _pay2 = fin.get("payout_ratio")
+                    if (_div is None or _div <= 0) and not (_eps2 and _eps2 > 0 and _pay2):
+                        _diag.append("Dividend data missing (dividends paid / EPS×payout both unavailable) → fill in dividends paid")
+                    if fin.get("shares_b") is None:
+                        _diag.append("Diluted shares missing → fill in")
+                _label = _disp.upper() if _disp else "IV"
+                if _diag:
+                    st.warning(f"Model unavailable ({_label}): " + "; ".join(_diag))
+                else:
+                    st.warning(f"Model unavailable ({_label}): discounted value is negative or cash flow data is abnormal")
+            else:
+                # Model not run (should not happen in practice since Rf/ERP always have defaults)
+                st.warning("Insufficient parameters (fill in Rf / ERP in the sidebar)")
 
 
-# ── 3. 告警 ──────────────────────────────────────────────────────────────────
+# ── 3. Alerts ─────────────────────────────────────────────────────────────────
 alerts = out.get("alerts", [])
 if alerts:
-    st.subheader("告警")
+    st.subheader("Alerts")
     for a in alerts:
         msg = a.get("message", "")
         reason = a.get("reason", "")
         suggestion = a.get("suggestion", "")
-        detail = f"　原因：{reason}" + (f"　建议：{suggestion}" if suggestion else "")
+        detail = f"  Reason: {reason}" + (f"  Suggestion: {suggestion}" if suggestion else "")
         if a.get("level") == "critical":
             st.error(f"🔴 {msg}{detail}")
         else:
             st.warning(f"🟡 {msg}{detail}")
 
-# ── 4. 数据质量 ──────────────────────────────────────────────────────────────
-with st.expander("数据质量"):
+# ── 4. Data quality ───────────────────────────────────────────────────────────
+with st.expander("Data Quality"):
     dq = out.get("data_quality", {})
-    st.write(f"完整度：{dq.get('completeness', 0):.0%}")
+    st.write(f"Completeness: {dq.get('completeness', 0):.0%}")
     if dq.get("missing"):
-        st.caption("缺失字段：" + "、".join(dq["missing"]))
+        st.caption("Missing fields: " + ", ".join(dq["missing"]))
     if dq.get("critical"):
         for c in dq["critical"]:
             st.error(c)
@@ -760,24 +859,24 @@ with st.expander("数据质量"):
         for w in dq["warnings"]:
             st.warning(w)
 
-# ── 5. 完整 JSON（调试用）───────────────────────────────────────────────────
-with st.expander("完整数据（调试用）"):
+# ── 5. Full JSON (debug) ──────────────────────────────────────────────────────
+with st.expander("Full Data (Debug)"):
     st.json(out)
 
-# ── 6. 情景分析（底部，基于推荐模型）────────────────────────────────────────
+# ── 6. Scenario analysis (bottom, based on recommended model) ─────────────────
 st.markdown("---")
-st.subheader("情景分析")
+st.subheader("Scenario Analysis")
 
 mo_sc = out.get("model_outputs", {})
 norm_sc = out.get("normalized", {})
 rec_label_sc = _MODEL_LABELS.get(recommended_model, recommended_model)
 
 st.markdown(
-    f"**推荐模型：{rec_label_sc}**　｜　行业：{sector}{industry_str}\n\n"
-    f"以下在 **{rec_label_sc}** 的基础上，通过调整关键参数生成悲观 / 基准 / 乐观三个情景。"
+    f"**Recommended Model: {rec_label_sc}**  |  Sector: {sector}{industry_str}\n\n"
+    f"The following generates Bear / Base / Bull scenarios by adjusting key parameters of **{rec_label_sc}**."
 )
 
-# ----- PE 回归情景 -----
+# ----- PE regression scenarios -----
 if recommended_model == "damodaran_pe":
     dam_det_sc = mo_sc.get("damodaran_pe_details") or {}
     beta_sc = dam_det_sc.get("beta_used")
@@ -794,17 +893,17 @@ if recommended_model == "damodaran_pe":
     gEPS_def = gEPS_pct / 100
     _beta_str = f"{beta_sc:.3f}" if beta_sc is not None else "N/A"
     _eps_str = f"{eps_sc:.2f}" if eps_sc else "N/A"
-    st.caption(f"调整变量：**预期EPS增速 gEPS**（β={_beta_str}，派息率={payout_sc:.1%}，稀释EPS=${_eps_str}）")
+    st.caption(f"Adjustment variable: **Expected EPS Growth gEPS** (β={_beta_str}, payout={payout_sc:.1%}, diluted EPS=${_eps_str})")
     sc1, sc2, sc3 = st.columns(3)
     with sc1:
-        bear_g = st.number_input("Bear gEPS（%）", value=round((gEPS_def - 0.05) * 100, 1), step=0.5, format="%.1f", key="sc_bear_g") / 100
+        bear_g = st.number_input("Bear gEPS (%)", value=round((gEPS_def - 0.05) * 100, 1), step=0.5, format="%.1f", key="sc_bear_g") / 100
     with sc2:
-        base_g = st.number_input("Base gEPS（%）", value=round(gEPS_def * 100, 1), step=0.5, format="%.1f", key="sc_base_g") / 100
+        base_g = st.number_input("Base gEPS (%)", value=round(gEPS_def * 100, 1), step=0.5, format="%.1f", key="sc_base_g") / 100
     with sc3:
-        bull_g = st.number_input("Bull gEPS（%）", value=round((gEPS_def + 0.05) * 100, 1), step=0.5, format="%.1f", key="sc_bull_g") / 100
-    sc_prices = [(_dam_price(bear_g), "悲观 Bear", "#EF4444"), (_dam_price(base_g), "基准 Base", "#F59E0B"), (_dam_price(bull_g), "乐观 Bull", "#22C55E")]
+        bull_g = st.number_input("Bull gEPS (%)", value=round((gEPS_def + 0.05) * 100, 1), step=0.5, format="%.1f", key="sc_bull_g") / 100
+    sc_prices = [(_dam_price(bear_g), "Bear", "#EF4444"), (_dam_price(base_g), "Base", "#F59E0B"), (_dam_price(bull_g), "Bull", "#22C55E")]
 
-# ----- 内在价值折现情景 -----
+# ----- Intrinsic value discounting scenarios -----
 elif recommended_model == "damodaran_iv":
     iv_det_sc = mo_sc.get("damodaran_iv_details") or {}
     iv_model_sc = iv_det_sc.get("model_used", "").lower()
@@ -812,16 +911,16 @@ elif recommended_model == "damodaran_iv":
     wacc_sc = iv_det_sc.get("wacc", re_sc)
     g_stable_sc = iv_det_sc.get("g_stable_used", 0.025)
 
-    st.caption(f"调整变量：**高速增长率 g_high**（模型={iv_model_sc.upper()}，折现率={wacc_sc if iv_model_sc == 'fcff' else re_sc:.2%}，g_stable={g_stable_sc:.2%}）")
+    st.caption(f"Adjustment variable: **High Growth Rate g_high** (model={iv_model_sc.upper()}, discount rate={wacc_sc if iv_model_sc == 'fcff' else re_sc:.2%}, g_stable={g_stable_sc:.2%})")
 
     g_high_def = g_high_iv_pct / 100
     sc1, sc2, sc3 = st.columns(3)
     with sc1:
-        bear_gh = st.number_input("Bear g_high（%）", value=round((g_high_def - 0.05) * 100, 1), step=0.5, format="%.1f", key="sc_iv_bear") / 100
+        bear_gh = st.number_input("Bear g_high (%)", value=round((g_high_def - 0.05) * 100, 1), step=0.5, format="%.1f", key="sc_iv_bear") / 100
     with sc2:
-        base_gh = st.number_input("Base g_high（%）", value=round(g_high_def * 100, 1), step=0.5, format="%.1f", key="sc_iv_base") / 100
+        base_gh = st.number_input("Base g_high (%)", value=round(g_high_def * 100, 1), step=0.5, format="%.1f", key="sc_iv_base") / 100
     with sc3:
-        bull_gh = st.number_input("Bull g_high（%）", value=round((g_high_def + 0.05) * 100, 1), step=0.5, format="%.1f", key="sc_iv_bull") / 100
+        bull_gh = st.number_input("Bull g_high (%)", value=round((g_high_def + 0.05) * 100, 1), step=0.5, format="%.1f", key="sc_iv_bull") / 100
 
     def _iv_approx(g_high_new):
         if iv_val is None or g_high_def == 0:
@@ -830,12 +929,12 @@ elif recommended_model == "damodaran_iv":
         return iv_val * ratio
 
     sc_prices = [
-        (_iv_approx(bear_gh), "悲观 Bear", "#EF4444"),
-        (_iv_approx(base_gh), "基准 Base", "#F59E0B"),
-        (_iv_approx(bull_gh), "乐观 Bull", "#22C55E"),
+        (_iv_approx(bear_gh), "Bear", "#EF4444"),
+        (_iv_approx(base_gh), "Base", "#F59E0B"),
+        (_iv_approx(bull_gh), "Bull", "#22C55E"),
     ]
 
-# ----- EV/EBITDA 情景 -----
+# ----- EV/EBITDA scenarios -----
 elif recommended_model == "ev_ebitda":
     ebitda_sc = norm_sc.get("ebitda")
     nd_sc = norm_sc.get("net_debt", 0) or 0
@@ -847,17 +946,17 @@ elif recommended_model == "ev_ebitda":
         eq = anchor * ebitda_sc - nd_sc
         return eq / sh_sc if eq > 0 else None
 
-    st.caption(f"调整变量：**EV/EBITDA 倍数**（EBITDA=${ebitda_sc / 1e9:.2f}B，净债务=${nd_sc / 1e9:.2f}B）" if ebitda_sc else "EV/EBITDA 数据不可用")
+    st.caption(f"Adjustment variable: **EV/EBITDA multiple** (EBITDA=${ebitda_sc / 1e9:.2f}B, Net Debt=${nd_sc / 1e9:.2f}B)" if ebitda_sc else "EV/EBITDA data unavailable")
     sc1, sc2, sc3 = st.columns(3)
     with sc1:
-        bear_anch = st.number_input("Bear EV/EBITDA（×）", value=10.0, step=0.5, format="%.1f", key="sc_bear_ev")
+        bear_anch = st.number_input("Bear EV/EBITDA (×)", value=10.0, step=0.5, format="%.1f", key="sc_bear_ev")
     with sc2:
-        base_anch = st.number_input("Base EV/EBITDA（×）", value=12.0, step=0.5, format="%.1f", key="sc_base_ev")
+        base_anch = st.number_input("Base EV/EBITDA (×)", value=12.0, step=0.5, format="%.1f", key="sc_base_ev")
     with sc3:
-        bull_anch = st.number_input("Bull EV/EBITDA（×）", value=14.0, step=0.5, format="%.1f", key="sc_bull_ev")
-    sc_prices = [(_eveb_price(bear_anch), "悲观 Bear", "#EF4444"), (_eveb_price(base_anch), "基准 Base", "#F59E0B"), (_eveb_price(bull_anch), "乐观 Bull", "#22C55E")]
+        bull_anch = st.number_input("Bull EV/EBITDA (×)", value=14.0, step=0.5, format="%.1f", key="sc_bull_ev")
+    sc_prices = [(_eveb_price(bear_anch), "Bear", "#EF4444"), (_eveb_price(base_anch), "Base", "#F59E0B"), (_eveb_price(bull_anch), "Bull", "#22C55E")]
 
-# ----- EV/Sales 情景 -----
+# ----- EV/Sales scenarios -----
 else:
     rev_sc = norm_sc.get("revenue")
     nd_sc = norm_sc.get("net_debt", 0) or 0
@@ -869,17 +968,17 @@ else:
         eq = anchor * rev_sc - nd_sc
         return eq / sh_sc if eq > 0 else None
 
-    st.caption(f"调整变量：**EV/Sales 倍数**（Revenue=${rev_sc / 1e9:.2f}B，净债务=${nd_sc / 1e9:.2f}B）" if rev_sc else "EV/Sales 数据不可用")
+    st.caption(f"Adjustment variable: **EV/Sales multiple** (Revenue=${rev_sc / 1e9:.2f}B, Net Debt=${nd_sc / 1e9:.2f}B)" if rev_sc else "EV/Sales data unavailable")
     sc1, sc2, sc3 = st.columns(3)
     with sc1:
-        bear_anch = st.number_input("Bear EV/Sales（×）", value=3.0, step=0.5, format="%.1f", key="sc_bear_evs")
+        bear_anch = st.number_input("Bear EV/Sales (×)", value=3.0, step=0.5, format="%.1f", key="sc_bear_evs")
     with sc2:
-        base_anch = st.number_input("Base EV/Sales（×）", value=5.0, step=0.5, format="%.1f", key="sc_base_evs")
+        base_anch = st.number_input("Base EV/Sales (×)", value=5.0, step=0.5, format="%.1f", key="sc_base_evs")
     with sc3:
-        bull_anch = st.number_input("Bull EV/Sales（×）", value=7.0, step=0.5, format="%.1f", key="sc_bull_evs")
-    sc_prices = [(_evs_price(bear_anch), "悲观 Bear", "#EF4444"), (_evs_price(base_anch), "基准 Base", "#F59E0B"), (_evs_price(bull_anch), "乐观 Bull", "#22C55E")]
+        bull_anch = st.number_input("Bull EV/Sales (×)", value=7.0, step=0.5, format="%.1f", key="sc_bull_evs")
+    sc_prices = [(_evs_price(bear_anch), "Bear", "#EF4444"), (_evs_price(base_anch), "Base", "#F59E0B"), (_evs_price(bull_anch), "Bull", "#22C55E")]
 
-# ----- 情景结果展示 -----
+# ----- Scenario results display -----
 valid_sc = [(v, lab, col) for v, lab, col in sc_prices if v is not None]
 if valid_sc:
     m1, m2, m3 = st.columns(3)
@@ -894,20 +993,20 @@ if valid_sc:
     fig_sc2 = go.Figure()
     for v, lab, col in sc_prices:
         if v is not None:
-            fig_sc2.add_trace(go.Bar(name=lab.split()[1], x=[lab.split()[1]], y=[v], marker_color=col, width=0.4))
+            fig_sc2.add_trace(go.Bar(name=lab, x=[lab], y=[v], marker_color=col, width=0.4))
     if p:
         fig_sc2.add_hline(y=p, line_dash="dash", line_color="white",
-                          annotation_text=f"当前股价 ${p:.1f}", annotation_position="top left")
+                          annotation_text=f"Current Price ${p:.1f}", annotation_position="top left")
     fig_sc2.update_layout(
         height=320, showlegend=False, margin=dict(l=20, r=20, t=40, b=20),
-        yaxis_title="估值（$）",
-        title=f"三情景估值 vs 当前股价（{rec_label_sc}）",
+        yaxis_title="Valuation ($)",
+        title=f"Three-Scenario Valuation vs Current Price ({rec_label_sc})",
     )
     st.plotly_chart(fig_sc2, use_container_width=True)
 else:
-    st.warning("情景分析所需数据不足，请检查数据质量或切换模型。")
+    st.warning("Insufficient data for scenario analysis — check data quality or switch models.")
 
-# ── 7. 格言 ─────────────────────────────────────────────────────────────────
+# ── 7. Quotes ─────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.markdown(
     """

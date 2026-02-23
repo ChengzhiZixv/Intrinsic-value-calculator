@@ -1,11 +1,13 @@
 # =============================================================================
-# 估值系统 - 数据结构定义（types.py）
+# Valuation System - Data Structure Definitions (types.py)
 # =============================================================================
-# 本文件定义整个估值流水线中所有「数据容器」的模板。
-# 你不需要改代码逻辑，只需通过「人类语言」理解每个字段含义，
-# 并在 config/analyst_overrides.yaml 或 Streamlit 侧边栏调整参数即可。
+# This file defines all "data container" templates used throughout the valuation
+# pipeline. You do not need to modify any logic here — simply understand each
+# field's meaning and adjust parameters via config/analyst_overrides.yaml or
+# the Streamlit sidebar.
 #
-# 各层数据流：RawData → NormalizedFinancials → Assumptions → ModelOutputs → FinalRange
+# Data flow across layers:
+#   RawData → NormalizedFinancials → Assumptions → ModelOutputs → FinalRange
 # =============================================================================
 
 from dataclasses import dataclass, field
@@ -13,184 +15,184 @@ from typing import Optional, Any
 
 
 # -----------------------------------------------------------------------------
-# Layer 1 输出：原始数据（从 Yahoo Finance 拉取，未经处理）
+# Layer 1 output: raw data (fetched from Yahoo Finance, unprocessed)
 # -----------------------------------------------------------------------------
 @dataclass
 class RawData:
     """
-    原始数据容器。来源：yfinance.Ticker(ticker).info 及财报表。
-    字段缺失时为 None，不做插补。
+    Raw data container. Source: yfinance.Ticker(ticker).info and financial statements.
+    Missing fields are None; no imputation is performed here.
     """
     ticker: str
-    # 市场数据
-    current_price: Optional[float] = None      # 当前股价
-    market_cap: Optional[float] = None       # 市值
-    shares: Optional[float] = None            # 股本（优先稀释股本，与 MOOMOO 等一致）
-    enterprise_value: Optional[float] = None  # 企业价值 EV
-    # 估值字段（yfinance 的 PE 为未稀释，仅作参考；本系统会自行计算稀释 PE）
-    trailing_pe: Optional[float] = None       #  trailing PE（未稀释，不可靠）
+    # Market data
+    current_price: Optional[float] = None      # Current stock price
+    market_cap: Optional[float] = None         # Market capitalization
+    shares: Optional[float] = None             # Shares outstanding (prefer diluted, consistent with MOOMOO etc.)
+    enterprise_value: Optional[float] = None   # Enterprise value (EV)
+    # Valuation fields (yfinance PE is undiluted — for reference only; system computes diluted PE independently)
+    trailing_pe: Optional[float] = None        # Trailing PE (undiluted, unreliable)
     forward_pe: Optional[float] = None
     price_to_book: Optional[float] = None
     ebitda: Optional[float] = None
-    # 财报核心项（年度优先）
-    revenue: Optional[float] = None          # 收入
-    net_income: Optional[float] = None       # 净利润
-    cfo: Optional[float] = None             # 经营现金流（CFO）
-    capex: Optional[float] = None           # 资本开支（若缺失可用 PPE 变化估算）
+    # Core income statement items (annual preferred)
+    revenue: Optional[float] = None            # Total revenue
+    net_income: Optional[float] = None         # Net income
+    cfo: Optional[float] = None                # Cash flow from operations (CFO)
+    capex: Optional[float] = None              # Capital expenditure (estimated from PPE change if missing)
     total_debt: Optional[float] = None
     cash: Optional[float] = None
-    # 稀释 EPS（用于计算稀释 PE，与 MOOMOO 一致）
+    # Diluted EPS (used to compute diluted PE, consistent with MOOMOO)
     diluted_eps: Optional[float] = None
-    # 折旧摊销（用于激进会计检测）
+    # Depreciation & amortization (used for aggressive accounting detection)
     depreciation_amortization: Optional[float] = None
-    # PPE 净额（用于 CAPEX 缺失时估算：PPE 年度变化）
+    # Net PP&E (used to estimate CapEx from annual change when CapEx is missing)
     ppe_net: Optional[float] = None
     ppe_net_prior: Optional[float] = None
-    # Damodaran PE 所需字段
-    beta: Optional[float] = None                  # yfinance 回归 Beta（作为备用）
-    payout_ratio: Optional[float] = None          # 派息率 = 股息 / 净利润
-    # 行业信息（用于模型推荐）
-    sector: Optional[str] = None                  # yfinance 行业分类，如 "Technology"
-    industry: Optional[str] = None                # yfinance 细分行业
-    # 达莫达兰内在价值模型所需字段
-    operating_income: Optional[float] = None      # EBIT（营业利润）
-    working_capital: Optional[float] = None       # 流动资产 - 流动负债（当年）
-    working_capital_prior: Optional[float] = None # 上一年营运资本（用于计算 ΔWC）
-    net_debt_issuance: Optional[float] = None     # 净债务融资额（正=借入，负=偿还）
-    dividends_paid: Optional[float] = None        # 已支付股息总额（绝对值，正数）
-    # 财报最新日期（用于时效性检查）
+    # Fields required by the Damodaran PE regression
+    beta: Optional[float] = None                  # yfinance regression beta (fallback)
+    payout_ratio: Optional[float] = None          # Payout ratio = dividends / net income
+    # Sector info (used for model recommendation)
+    sector: Optional[str] = None                  # yfinance sector classification, e.g. "Technology"
+    industry: Optional[str] = None                # yfinance sub-industry
+    # Fields required by the Damodaran intrinsic value models
+    operating_income: Optional[float] = None      # EBIT (operating income)
+    working_capital: Optional[float] = None       # Current assets - current liabilities (current year)
+    working_capital_prior: Optional[float] = None # Prior year working capital (used to compute ΔWC)
+    net_debt_issuance: Optional[float] = None     # Net debt issuance (positive = new borrowing, negative = repayment)
+    dividends_paid: Optional[float] = None        # Total dividends paid (absolute value, positive)
+    # Latest financial date (used for data freshness check)
     latest_financial_date: Optional[str] = None
-    # 拉取时间戳
+    # Fetch timestamp
     fetch_timestamp: Optional[str] = None
 
 
 # -----------------------------------------------------------------------------
-# Layer 1 输出：数据质量报告
+# Layer 1 output: data quality report
 # -----------------------------------------------------------------------------
 @dataclass
 class DataQualityReport:
     """
-    数据质量报告。用于展示缺失项、异常项、逻辑自洽性、时效性。
+    Data quality report. Surfaces missing fields, anomalies, logical consistency, and data freshness.
     """
-    completeness: float = 0.0   # 完整度 0~1
-    missing: list = field(default_factory=list)   # 缺失字段清单
-    warnings: list = field(default_factory=list)  # 警告（如 CAPEX 估算、股本反推）
-    critical: list = field(default_factory=list)  # 严重问题（如 CFO 缺失导致 DCF 不可用）
-    source_log: str = ""       # 数据来源、拉取时间
+    completeness: float = 0.0   # Completeness score 0–1
+    missing: list = field(default_factory=list)   # List of missing fields
+    warnings: list = field(default_factory=list)  # Warnings (e.g. CapEx estimated, shares back-calculated)
+    critical: list = field(default_factory=list)  # Critical issues (e.g. CFO missing → DCF unavailable)
+    source_log: str = ""        # Data source and fetch timestamp
 
 
 # -----------------------------------------------------------------------------
-# Layer 2 输出：标准化财务数据（可估值形式）
+# Layer 2 output: normalized financials (ready for valuation models)
 # -----------------------------------------------------------------------------
 @dataclass
 class NormalizedFinancials:
     """
-    标准化后的财务数据。用于 DCF、相对估值等模型输入。
-    所有派生项（FCF、净债务等）在此计算；若为估算会记录在 transform_log 中。
+    Normalized financial data. Used as input for DCF, relative valuation, and other models.
+    All derived items (FCF, net debt, etc.) are computed here; estimates are recorded in transform_log.
     """
     ticker: str
-    # 核心派生项
-    fcf: Optional[float] = None              # 自由现金流 = CFO - CAPEX
-    net_debt: Optional[float] = None         # 净债务 = Total Debt - Cash
+    # Core derived items
+    fcf: Optional[float] = None              # Free cash flow = CFO - CapEx
+    net_debt: Optional[float] = None         # Net debt = Total Debt - Cash
     revenue: Optional[float] = None
     ebitda: Optional[float] = None
     net_income: Optional[float] = None
-    # 比率（能算则算）
-    fcf_margin: Optional[float] = None     # FCF / Revenue
-    ebitda_margin: Optional[float] = None   # EBITDA / Revenue
-    roe: Optional[float] = None             # 净资产收益率
-    # 股本（优先稀释，用于每股估值）
+    # Ratios (computed when data is available)
+    fcf_margin: Optional[float] = None       # FCF / Revenue
+    ebitda_margin: Optional[float] = None    # EBITDA / Revenue
+    roe: Optional[float] = None              # Return on equity
+    # Shares (prefer diluted, used for per-share valuation)
     shares_diluted: Optional[float] = None
-    # 口径说明
+    # Period type
     period_type: str = "annual"              # annual / quarterly
-    # 估算与变换日志（供你核对）
+    # Transformation log (for review)
     transform_log: list = field(default_factory=list)
 
 
 # -----------------------------------------------------------------------------
-# Layer 3 输出：模型选择结果
+# Layer 3 output: model selection result
 # -----------------------------------------------------------------------------
 @dataclass
 class SelectionResult:
-    """根据数据可得性选择的可用模型及理由。"""
-    enabled_models: list = field(default_factory=list)  # 如 ["dcf", "ev_ebitda"]
-    rationale: str = ""                     # 选择理由（人类可读）
-    company_tag: str = ""                   # 如 "fcf_positive" / "revenue_only"
-    recommended_model: str = "damodaran_pe" # 根据行业推荐的首选模型
-    recommended_reason: str = ""            # 推荐理由（人类可读）
+    """Model selection based on data availability, with sector-based recommendation."""
+    enabled_models: list = field(default_factory=list)  # e.g. ["ev_ebitda", "ev_sales"]
+    rationale: str = ""                      # Human-readable selection rationale
+    company_tag: str = ""                    # e.g. "fcf_positive" / "revenue_only"
+    recommended_model: str = "damodaran_pe"  # Sector-driven preferred model
+    recommended_reason: str = ""             # Human-readable recommendation reason
 
 
 # -----------------------------------------------------------------------------
-# Layer 4 输出：估值假设（所有参数可覆盖，并记录来源）
-# [ANALYST_REQUIRED] 标注的为需要分析师重点核对的参数
+# Layer 4 output: valuation assumptions (all parameters can be overridden with source logging)
+# [ANALYST_REQUIRED] fields are the ones analysts must review carefully
 # -----------------------------------------------------------------------------
 @dataclass
 class Assumptions:
     """
-    估值假设。默认值见下方；可通过 overrides 或 config 覆盖。
+    Valuation assumptions. Defaults shown below; can be overridden via overrides dict or config.
     """
-    # [ANALYST_REQUIRED] 折现率 r：通常 8%~12%，高成长可略低，高风险可略高
+    # [ANALYST_REQUIRED] Discount rate r: typically 8%–12%; slightly lower for high-growth, higher for high-risk
     discount_rate: float = 0.10
-    # [ANALYST_REQUIRED] 永续增长 g：不宜超过名义 GDP，通常 2%~3%
+    # [ANALYST_REQUIRED] Perpetual growth g: should not exceed nominal GDP; typically 2%–3%
     perpetual_growth: float = 0.025
-    explicit_years: int = 5                 # 显式预测年数
-    # [ANALYST_REQUIRED] 显式期增长率：优先用历史 CAGR，算不出则用默认 5%
+    explicit_years: int = 5                  # Number of explicit forecast years
+    # [ANALYST_REQUIRED] Explicit period growth rate: uses historical CAGR if available, else defaults to 5%
     explicit_growth_rate: float = 0.05
-    # 假设来源记录（default / user）
+    # Log of assumption sources (default / user)
     assumption_log: list = field(default_factory=list)
 
 
 # -----------------------------------------------------------------------------
-# Layer 5 输出：各模型估值结果
+# Layer 5 output: model valuation results
 # -----------------------------------------------------------------------------
 @dataclass
 class ModelOutputs:
-    """各估值模型的输出。能算则填，不能则 None。"""
+    """Outputs from each valuation model. Filled when computable, None otherwise."""
     ev_ebitda: Optional[float] = None
     ev_sales: Optional[float] = None
-    multiples_details: Optional[dict] = None      # 倍数推导明细（implied倍数、WACC、再投资率等）
-    # Damodaran PE 估值
-    damodaran_pe: Optional[float] = None          # 目标价
-    damodaran_pe_details: Optional[dict] = None   # 计算明细（beta/payout/gEPS/PE倍数）
-    # 达莫达兰内在价值模型（FCFF / FCFE / DDM）
-    damodaran_iv: Optional[float] = None          # 内在价值每股估值
-    damodaran_iv_details: Optional[dict] = None   # 含 model_used, wacc/re, terminal_pct 等
-    # 各模型内部警告
+    multiples_details: Optional[dict] = None      # Multiple derivation detail (implied multiple, WACC, reinvestment rate, etc.)
+    # Damodaran PE regression
+    damodaran_pe: Optional[float] = None          # Target price
+    damodaran_pe_details: Optional[dict] = None   # Computation detail (beta / payout / gEPS / PE multiple)
+    # Damodaran intrinsic value model (FCFF / FCFE / DDM)
+    damodaran_iv: Optional[float] = None          # Intrinsic value per share
+    damodaran_iv_details: Optional[dict] = None   # Contains model_used, wacc/re, terminal_pct, etc.
+    # Per-model internal warnings
     model_warnings: list = field(default_factory=list)
 
 
 # -----------------------------------------------------------------------------
-# Layer 6 输出：三情景区间
+# Layer 6 output: three-scenario range
 # -----------------------------------------------------------------------------
 @dataclass
 class ScenarioOutputs:
-    """Bear / Base / Bull 三情景 + 敏感性表。"""
+    """Bear / Base / Bull three-scenario outputs + sensitivity table."""
     low: float = 0.0
     mid: float = 0.0
     high: float = 0.0
-    sensitivity: dict = field(default_factory=dict)  # 单变量敏感性
+    sensitivity: dict = field(default_factory=dict)  # Single-variable sensitivity
 
 
 # -----------------------------------------------------------------------------
-# Layer 7 输出：最终估值区间
+# Layer 7 output: final valuation range
 # -----------------------------------------------------------------------------
 @dataclass
 class FinalRange:
-    """融合后的最终估值区间。"""
+    """Aggregated final valuation range."""
     low: float = 0.0
     mid: float = 0.0
     high: float = 0.0
-    model_contributions: dict = field(default_factory=dict)  # 各模型贡献
-    weight_explain: str = ""                # 权重说明
-    divergence_alert: bool = False          # 模型分歧 >30% 时 True
+    model_contributions: dict = field(default_factory=dict)  # Each model's contribution
+    weight_explain: str = ""                 # Weighting explanation
+    divergence_alert: bool = False           # True when model divergence exceeds 30%
 
 
 # -----------------------------------------------------------------------------
-# Layer 8 输出：告警列表
+# Layer 8 output: alert list
 # -----------------------------------------------------------------------------
 @dataclass
 class AlertItem:
-    """单条告警。"""
+    """A single alert item."""
     level: str          # "critical" / "warning"
     message: str
     reason: str

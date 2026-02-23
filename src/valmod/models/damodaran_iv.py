@@ -1,23 +1,26 @@
 # =============================================================================
-# Layer 5 - 达莫达兰内在价值模型（damodaran_iv.py）
+# Layer 5 - Damodaran Intrinsic Value Model (damodaran_iv.py)
 # =============================================================================
-# 职责：根据公司财务特征自动选择并运行三种达莫达兰内在价值模型之一：
-#   FCFF（公司自由现金流）、FCFE（股权自由现金流）、DDM（股利贴现）
+# Responsibility: automatically select and run one of three Damodaran intrinsic
+# value models based on the company's financial characteristics:
+#   FCFF (Free Cash Flow to Firm)
+#   FCFE (Free Cash Flow to Equity)
+#   DDM  (Dividend Discount Model)
 #
-# 选择逻辑（参考 Damodaran 教学框架）：
-#   DDM ：派息率 > 70% 且 债/市值 < 50%  ← 成熟现金奶牛（如可口可乐）
-#   FCFF：债/市值 > 80% 或 净利润 ≤ 0    ← 高杠杆/亏损（FCFE 受还债扰动过大）
-#   FCFE：其余情况                        ← 杠杆稳定且盈利
+# Selection logic (based on Damodaran's teaching framework):
+#   DDM : payout ratio > 70% AND debt/market cap < 50%  ← mature cash cow (e.g. Coca-Cola)
+#   FCFF: debt/market cap > 80% OR net income ≤ 0       ← high-leverage / loss-making
+#   FCFE: all other cases                                ← stable leverage with positive earnings
 #
-# 关键参数（由用户在侧边栏填入，overrides 传入）：
-#   rf              - 无风险利率（10 年期美债收益率）
-#   erp             - 股权风险溢价（Damodaran 每月更新，美股约 4.2–4.5%）
-#   default_spread  - 违约利差（根据公司信用评级查询，如 BBB ≈ 1.5–2.0%）
-#   sector_beta_unlevered - 行业无杠杆 Beta（来自 damodaran.com）
-#   tax_rate        - 边际税率
-#   g_high_iv       - 高速增长期增长率
-#   n_high_iv       - 高速增长期年数（成熟公司 5 年，成长型 10 年）
-#   g_stable_iv     - 永续增长率（必须 ≤ 无风险利率 Rf，通常 2–3%）
+# Key parameters (filled by user in the sidebar, passed via overrides):
+#   rf              - risk-free rate (10-year US Treasury yield)
+#   erp             - equity risk premium (Damodaran monthly update, ~4.2–4.5% for US)
+#   default_spread  - default spread (based on company credit rating, e.g. BBB ≈ 1.5–2.0%)
+#   sector_beta_unlevered - sector unlevered beta (from damodaran.com)
+#   tax_rate        - marginal tax rate
+#   g_high_iv       - high-growth phase growth rate
+#   n_high_iv       - number of high-growth years (5 for mature, 10 for high-growth)
+#   g_stable_iv     - perpetual growth rate (must be ≤ risk-free rate Rf, typically 2–3%)
 # =============================================================================
 
 from typing import Optional
@@ -25,12 +28,13 @@ from typing import Optional
 from src.valmod.types import NormalizedFinancials, RawData
 
 
-# ── 模型选择 ──────────────────────────────────────────────────────────────────
+# ── Model selection ───────────────────────────────────────────────────────────
 
 def select_damodaran_model(raw: RawData) -> tuple:
     """
-    根据公司财务特征选择最适合的达莫达兰内在价值模型。
-    返回：(model_name, reason_str)
+    Select the most appropriate Damodaran intrinsic value model based on
+    the company's financial characteristics.
+    Returns: (model_name, reason_str)
       model_name ∈ {"fcff", "fcfe", "ddm"}
     """
     net_income = raw.net_income or 0
@@ -42,55 +46,64 @@ def select_damodaran_model(raw: RawData) -> tuple:
     if payout_ratio > 0.7 and D_ratio < 0.5:
         return (
             "ddm",
-            f"派息率 {payout_ratio:.1%} > 70% 且 债/市值 {D_ratio:.1%} < 50%，"
-            "符合成熟现金奶牛特征，DDM（股利贴现）最适合",
+            f"Payout ratio {payout_ratio:.1%} > 70% and debt/market cap {D_ratio:.1%} < 50%; "
+            "matches mature cash cow profile — DDM (Dividend Discount Model) is most appropriate",
         )
     elif D_ratio > 0.8 or net_income <= 0:
-        reason = "净利润为负或零" if net_income <= 0 else f"债/市值 {D_ratio:.1%} > 80%"
+        reason = "Net income negative or zero" if net_income <= 0 else f"Debt/market cap {D_ratio:.1%} > 80%"
         return (
             "fcff",
-            f"{reason}，高杠杆/亏损结构下 FCFF（公司自由现金流）更稳健",
+            f"{reason}; FCFF (Free Cash Flow to Firm) is more robust for high-leverage / loss-making companies",
         )
     else:
         return (
             "fcfe",
-            f"杠杆稳定（债/市值 {D_ratio:.1%}）且净利润为正，FCFE（股权自由现金流）直接衡量股东回报",
+            f"Stable leverage (debt/market cap {D_ratio:.1%}) with positive net income; "
+            "FCFE (Free Cash Flow to Equity) directly measures shareholder returns",
         )
 
 
-# ── 共用参数提取 ──────────────────────────────────────────────────────────────
+# ── Shared parameter extraction ───────────────────────────────────────────────
 
 def _beta_and_cost_of_equity(raw: RawData, params: dict) -> tuple:
     """
-    返回 (beta_levered, re, error_str_or_None)
+    Returns (beta_levered, re, error_str_or_None)
     re = Rf + β_levered × ERP
     β_levered = β_unlevered × (1 + (1 - t) × D/E)
     """
     Rf = params.get("rf", 0.045)
     ERP = params.get("erp", 0.045)
-    beta_unlevered = params.get("sector_beta_unlevered", 1.0)
     t = params.get("tax_rate", 0.25)
 
     total_debt = raw.total_debt or 0
     market_cap = raw.market_cap or 0
     if market_cap <= 0:
-        return (None, None, "市值不可得，无法计算 Beta")
+        return (None, None, "Market cap unavailable; cannot compute beta")
 
     D_E = total_debt / market_cap
-    beta_levered = beta_unlevered * (1 + (1 - t) * D_E)
+    # sector_beta_unlevered may be None (user left 0 → overrides passes None)
+    # Fall back to yfinance regression beta (already levered); final fallback is 1.0
+    sector_beta_unlevered = params.get("sector_beta_unlevered")
+    if sector_beta_unlevered is not None:
+        beta_levered = sector_beta_unlevered * (1 + (1 - t) * D_E)
+    elif raw.beta is not None:
+        beta_levered = raw.beta  # yfinance regression beta is already levered
+    else:
+        beta_levered = 1.0  # final fallback
+
     re = Rf + beta_levered * ERP
     return (beta_levered, re, None)
 
 
-# ── FCFF 模型 ─────────────────────────────────────────────────────────────────
+# ── FCFF model ────────────────────────────────────────────────────────────────
 
 def run_fcff(raw: RawData, params: dict) -> dict:
     """
     FCFF = EBIT×(1-t) - Net CapEx - ΔNon-cash WC
-    折现率：WACC = re×E/(D+E) + rd×(1-t)×D/(D+E)
+    Discount rate: WACC = re×E/(D+E) + rd×(1-t)×D/(D+E)
     rd = Rf + Default Spread
-    终值：TV = FCFF_n × (1+g_stable) / (WACC - g_stable)
-    每股价值 = (EV - 总债务 + 现金) / 股本
+    Terminal value: TV = FCFF_n × (1+g_stable) / (WACC - g_stable)
+    Value per share = (EV - Total Debt + Cash) / Diluted Shares
     """
     Rf = params.get("rf", 0.045)
     default_spread = params.get("default_spread", 0.02)
@@ -98,13 +111,13 @@ def run_fcff(raw: RawData, params: dict) -> dict:
     g_high = params.get("g_high_iv", 0.10)
     n_high = int(params.get("n_high_iv", 5))
     g_stable = params.get("g_stable_iv", 0.025)
-    g_stable = min(g_stable, Rf)  # 强制约束 g ≤ Rf
+    g_stable = min(g_stable, Rf)  # enforce g ≤ Rf
 
-    # ── 数据校验 ──
+    # ── Data validation ──
     ebit = raw.operating_income
     if not ebit or ebit <= 0:
         return {"damodaran_iv": None, "damodaran_iv_details": {
-            "model_used": "FCFF", "error": "EBIT 不可得或非正，FCFF 不适用"}}
+            "model_used": "FCFF", "error": "EBIT unavailable or non-positive; FCFF not applicable"}}
 
     beta_levered, re, err = _beta_and_cost_of_equity(raw, params)
     if err:
@@ -115,7 +128,7 @@ def run_fcff(raw: RawData, params: dict) -> dict:
     cash = raw.cash or 0
     shares = raw.shares or 0
     if shares <= 0:
-        return {"damodaran_iv": None, "damodaran_iv_details": {"model_used": "FCFF", "error": "股本不可得"}}
+        return {"damodaran_iv": None, "damodaran_iv_details": {"model_used": "FCFF", "error": "Shares unavailable"}}
 
     # ── WACC ──
     V = market_cap + total_debt
@@ -126,7 +139,7 @@ def run_fcff(raw: RawData, params: dict) -> dict:
 
     if wacc <= g_stable:
         return {"damodaran_iv": None, "damodaran_iv_details": {
-            "model_used": "FCFF", "error": f"WACC({wacc:.2%}) ≤ g_stable({g_stable:.2%})，终值无意义"}}
+            "model_used": "FCFF", "error": f"WACC({wacc:.2%}) ≤ g_stable({g_stable:.2%}); terminal value undefined"}}
 
     # ── FCFF_0 ──
     capex_abs = abs(raw.capex) if raw.capex is not None else 0
@@ -140,22 +153,22 @@ def run_fcff(raw: RawData, params: dict) -> dict:
     fcff_0 = ebit * (1 - t) - net_capex - delta_wc
     if fcff_0 <= 0:
         return {"damodaran_iv": None, "damodaran_iv_details": {
-            "model_used": "FCFF", "error": f"FCFF_0={fcff_0/1e9:.2f}B 为负，FCFF 不适用（考虑改用 FCFE）"}}
+            "model_used": "FCFF", "error": f"FCFF_0={fcff_0/1e9:.2f}B is negative; FCFF not applicable (consider FCFE)"}}
 
-    # ── 高速增长期 PV ──
+    # ── High-growth phase PV ──
     pv_high = sum(fcff_0 * (1 + g_high) ** i / (1 + wacc) ** i for i in range(1, n_high + 1))
 
-    # ── 终值 ──
+    # ── Terminal value ──
     fcff_n = fcff_0 * (1 + g_high) ** n_high
     tv = fcff_n * (1 + g_stable) / (wacc - g_stable)
     pv_tv = tv / (1 + wacc) ** n_high
 
-    # ── 每股权益价值 ──
+    # ── Equity value per share ──
     ev = pv_high + pv_tv
     equity_value = ev - total_debt + cash
     if equity_value <= 0:
         return {"damodaran_iv": None, "damodaran_iv_details": {
-            "model_used": "FCFF", "error": "权益价值为负（债务超过 EV）", "ev": round(ev / 1e9, 2)}}
+            "model_used": "FCFF", "error": "Equity value negative (debt exceeds EV)", "ev": round(ev / 1e9, 2)}}
 
     value_per_share = equity_value / shares
 
@@ -178,14 +191,14 @@ def run_fcff(raw: RawData, params: dict) -> dict:
     }
 
 
-# ── FCFE 模型 ─────────────────────────────────────────────────────────────────
+# ── FCFE model ────────────────────────────────────────────────────────────────
 
 def run_fcfe(raw: RawData, params: dict) -> dict:
     """
-    FCFE = 净利润 + D&A - CapEx - ΔWC + 净债务融资
-    折现率：re（股权成本，CAPM）
-    终值：TV = FCFE_n × (1+g_stable) / (re - g_stable)
-    每股价值 = PV(FCFE) / 股本
+    FCFE = Net Income + D&A - CapEx - ΔWC + Net Debt Issuance
+    Discount rate: re (cost of equity, CAPM)
+    Terminal value: TV = FCFE_n × (1+g_stable) / (re - g_stable)
+    Value per share = PV(FCFE) / Shares
     """
     Rf = params.get("rf", 0.045)
     t = params.get("tax_rate", 0.25)
@@ -197,7 +210,7 @@ def run_fcfe(raw: RawData, params: dict) -> dict:
     net_income = raw.net_income
     if not net_income or net_income <= 0:
         return {"damodaran_iv": None, "damodaran_iv_details": {
-            "model_used": "FCFE", "error": "净利润不可得或非正，FCFE 不适用"}}
+            "model_used": "FCFE", "error": "Net income unavailable or non-positive; FCFE not applicable"}}
 
     beta_levered, re, err = _beta_and_cost_of_equity(raw, params)
     if err:
@@ -209,7 +222,7 @@ def run_fcfe(raw: RawData, params: dict) -> dict:
 
     shares = raw.shares or 0
     if shares <= 0:
-        return {"damodaran_iv": None, "damodaran_iv_details": {"model_used": "FCFE", "error": "股本不可得"}}
+        return {"damodaran_iv": None, "damodaran_iv_details": {"model_used": "FCFE", "error": "Shares unavailable"}}
 
     depr = abs(raw.depreciation_amortization) if raw.depreciation_amortization is not None else 0
     capex_abs = abs(raw.capex) if raw.capex is not None else 0
@@ -221,7 +234,7 @@ def run_fcfe(raw: RawData, params: dict) -> dict:
     fcfe_0 = net_income + depr - capex_abs - delta_wc + net_debt_iss
     if fcfe_0 <= 0:
         return {"damodaran_iv": None, "damodaran_iv_details": {
-            "model_used": "FCFE", "error": f"FCFE_0={fcfe_0/1e9:.2f}B 为负（考虑改用 FCFF）"}}
+            "model_used": "FCFE", "error": f"FCFE_0={fcfe_0/1e9:.2f}B is negative (consider FCFF)"}}
 
     pv_high = sum(fcfe_0 * (1 + g_high) ** i / (1 + re) ** i for i in range(1, n_high + 1))
     fcfe_n = fcfe_0 * (1 + g_high) ** n_high
@@ -250,21 +263,21 @@ def run_fcfe(raw: RawData, params: dict) -> dict:
     }
 
 
-# ── DDM 模型 ──────────────────────────────────────────────────────────────────
+# ── DDM model ─────────────────────────────────────────────────────────────────
 
 def run_ddm(raw: RawData, params: dict) -> dict:
     """
-    DDM：每股价值 = PV(DPS 高速增长期) + PV(终值)
-    终值：TV = DPS_n × (1+g_stable) / (re - g_stable)
-    约束：g_stable ≤ Rf（无风险利率）
-    DPS 来源：优先用已派息金额/股本，其次用 EPS × 派息率
+    DDM: Value per share = PV(DPS high-growth phase) + PV(terminal value)
+    Terminal value: TV = DPS_n × (1+g_stable) / (re - g_stable)
+    Constraint: g_stable ≤ Rf (risk-free rate)
+    DPS source: prefer actual dividends paid / shares; fall back to EPS × payout ratio
     """
     Rf = params.get("rf", 0.045)
     t = params.get("tax_rate", 0.25)
-    g_high = params.get("g_high_iv", 0.05)   # DDM 的高速增长通常较低
+    g_high = params.get("g_high_iv", 0.05)   # DDM high-growth is typically lower
     n_high = int(params.get("n_high_iv", 5))
     g_stable = params.get("g_stable_iv", 0.025)
-    g_stable = min(g_stable, Rf)  # 强制：g ≤ Rf
+    g_stable = min(g_stable, Rf)  # enforce: g ≤ Rf
 
     beta_levered, re, err = _beta_and_cost_of_equity(raw, params)
     if err:
@@ -276,21 +289,21 @@ def run_ddm(raw: RawData, params: dict) -> dict:
 
     shares = raw.shares or 0
     if shares <= 0:
-        return {"damodaran_iv": None, "damodaran_iv_details": {"model_used": "DDM", "error": "股本不可得"}}
+        return {"damodaran_iv": None, "damodaran_iv_details": {"model_used": "DDM", "error": "Shares unavailable"}}
 
     # ── DPS ──
     dps = None
     dps_source = ""
     if raw.dividends_paid is not None and shares > 0:
         dps = raw.dividends_paid / shares
-        dps_source = "现金流量表实际派息"
+        dps_source = "Cash flow statement (actual dividends paid)"
     elif raw.diluted_eps is not None and raw.payout_ratio is not None:
         dps = raw.diluted_eps * raw.payout_ratio
-        dps_source = "EPS × 派息率估算"
+        dps_source = "EPS × payout ratio (estimated)"
 
     if not dps or dps <= 0:
         return {"damodaran_iv": None, "damodaran_iv_details": {
-            "model_used": "DDM", "error": "DPS 不可得或为零（公司未派息，DDM 不适用）"}}
+            "model_used": "DDM", "error": "DPS unavailable or zero (company pays no dividends; DDM not applicable)"}}
 
     pv_high = sum(dps * (1 + g_high) ** i / (1 + re) ** i for i in range(1, n_high + 1))
     dps_n = dps * (1 + g_high) ** n_high
@@ -308,29 +321,29 @@ def run_ddm(raw: RawData, params: dict) -> dict:
             "dps_0": round(dps, 4),
             "dps_source": dps_source,
             "g_stable_used": round(g_stable, 4),
-            "g_stable_constraint": f"g_stable 已限制 ≤ Rf({Rf:.2%})",
+            "g_stable_constraint": f"g_stable capped at ≤ Rf({Rf:.2%})",
             "terminal_pct": round(pv_tv / value_per_share, 4) if value_per_share > 0 else None,
         },
     }
 
 
-# ── 主入口 ────────────────────────────────────────────────────────────────────
+# ── Main entry point ──────────────────────────────────────────────────────────
 
 def run_damodaran_iv(raw: RawData, params: dict) -> dict:
     """
-    自动选择 FCFF/FCFE/DDM 并运行，返回内在价值估算结果。
-    输入：RawData, params（含 rf/erp/default_spread/sector_beta_unlevered 等）
-    输出：{damodaran_iv, damodaran_iv_details}
-      details 含 model_used, selection_reason, auto_model, is_manual_override 等
-    支持 params["iv_model_override"] ∈ {"fcff","fcfe","ddm"} 强制指定子模型。
+    Auto-select FCFF/FCFE/DDM and run, returning the intrinsic value estimate.
+    Input:  RawData, params (containing rf/erp/default_spread/sector_beta_unlevered, etc.)
+    Output: {damodaran_iv, damodaran_iv_details}
+      details includes model_used, selection_reason, auto_model, is_manual_override, etc.
+    Supports params["iv_model_override"] ∈ {"fcff","fcfe","ddm"} to force a specific sub-model.
     """
-    # 始终运行自动选择逻辑（即使被覆盖，也保留推荐结果供 UI 展示）
+    # Always run the auto-selection logic (retain recommendation even when overridden, for UI display)
     auto_model, auto_reason = select_damodaran_model(raw)
 
     model_override = (params.get("iv_model_override") or "").lower().strip()
     if model_override in ("fcff", "fcfe", "ddm"):
         model_name = model_override
-        selection_reason = f"用户手动指定 {model_name.upper()}（自动推荐：{auto_model.upper()}）"
+        selection_reason = f"User manually selected {model_name.upper()} (auto-recommendation: {auto_model.upper()})"
         is_manual = True
     else:
         model_name = auto_model
@@ -344,7 +357,7 @@ def run_damodaran_iv(raw: RawData, params: dict) -> dict:
     else:
         result = run_ddm(raw, params)
 
-    # 注入元信息
+    # Inject metadata
     if result.get("damodaran_iv_details") is not None:
         result["damodaran_iv_details"]["selection_reason"] = selection_reason
         result["damodaran_iv_details"]["auto_model"] = auto_model

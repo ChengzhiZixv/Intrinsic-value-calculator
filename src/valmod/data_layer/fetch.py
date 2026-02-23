@@ -1,11 +1,12 @@
 # =============================================================================
-# Layer 1 - 数据拉取（fetch.py）
+# Layer 1 - Data Fetching (fetch.py)
 # =============================================================================
-# 职责：输入任意美股 Ticker，从 Yahoo Finance 拉取原始数据，填充 RawData。
-# 不做任何估值、不做插补；缺失字段保持 None。
+# Responsibility: fetch raw data from Yahoo Finance for any US stock ticker
+# and populate a RawData object. No valuation or imputation is performed here;
+# missing fields remain None.
 #
-# 你可调整：
-# - 无业务参数，仅数据拉取。若 yfinance 字段名变化，可在此处修改映射。
+# Adjustable: no business parameters. If yfinance field names change, update
+# the key mappings in this file.
 # =============================================================================
 
 import os
@@ -15,7 +16,8 @@ import time
 from datetime import datetime
 from typing import Optional
 
-# 修复：certifi 证书路径含中文时 libcurl 无法读取，复制到临时目录并 monkey-patch
+# Fix: certifi certificate path containing non-ASCII characters cannot be read
+# by libcurl. Copy cert to a temp directory and monkey-patch certifi.where().
 def _fix_ssl_cert():
     try:
         import certifi
@@ -26,7 +28,7 @@ def _fix_ssl_cert():
                 shutil.copy2(cert_path, tmp)
             os.environ["CURL_CA_BUNDLE"] = tmp
             os.environ["REQUESTS_CA_BUNDLE"] = tmp
-            certifi.where = lambda: tmp  # curl_cffi 直接调用 certifi.where()，需 patch
+            certifi.where = lambda: tmp  # curl_cffi calls certifi.where() directly
 
     except Exception:
         pass
@@ -40,8 +42,9 @@ from src.valmod.types import RawData
 
 def _safe_float(val, default: Optional[float] = None) -> Optional[float]:
     """
-    安全转换为 float。若为 None、NaN、无穷大或非数字，返回 default。
-    用于避免 yfinance 返回异常值导致后续除零或逻辑错误。
+    Safely convert to float. Returns default if value is None, NaN, infinity,
+    or otherwise non-numeric. Prevents downstream division-by-zero or logic errors
+    caused by yfinance returning abnormal values.
     """
     if val is None:
         return default
@@ -56,27 +59,29 @@ def _safe_float(val, default: Optional[float] = None) -> Optional[float]:
 
 def fetch_raw(ticker: str) -> RawData:
     """
-    从 Yahoo Finance 拉取指定 Ticker 的原始数据。
-    输入：ticker，如 "AAPL", "ORCL", "MSFT"
-    输出：RawData 对象（缺失字段为 None）
+    Fetch raw data for the given ticker from Yahoo Finance.
+    Input:  ticker, e.g. "AAPL", "ORCL", "MSFT"
+    Output: RawData object (missing fields are None)
     """
     t = yf.Ticker(ticker)
     info = t.info
     fetch_ts = datetime.now().isoformat()
 
-    # ----- 市场数据 -----
+    # ----- Market data -----
     current_price = _safe_float(info.get("currentPrice") or info.get("regularMarketPrice"))
     market_cap = _safe_float(info.get("marketCap"))
-    shares = _safe_float(info.get("sharesOutstanding"))  # 通常为稀释股本
+    shares = _safe_float(info.get("sharesOutstanding"))  # typically diluted shares outstanding
     enterprise_value = _safe_float(info.get("enterpriseValue"))
 
-    # ----- 估值字段（yfinance 的 PE 为未稀释，仅作参考；本系统会自行计算稀释 PE）-----
+    # ----- Valuation fields (yfinance PE is undiluted — for reference only;
+    #        the system computes diluted PE independently) -----
     trailing_pe = _safe_float(info.get("trailingPE"))
     forward_pe = _safe_float(info.get("forwardPE"))
     price_to_book = _safe_float(info.get("priceToBook"))
     ebitda = _safe_float(info.get("ebitda"))
 
-    # ----- 财报：年度优先（yfinance 行/列结构可能因版本不同）-----
+    # ----- Financial statements: annual preferred
+    #        (yfinance row/column structure may vary across versions) -----
     def _first_val(df, *keys):
         if df is None or df.empty:
             return None
@@ -129,10 +134,10 @@ def fetch_raw(ticker: str) -> RawData:
     sector = info.get("sector") or None
     industry = info.get("industry") or None
 
-    # ----- 达莫达兰内在价值模型所需字段 -----
+    # ----- Fields required by Damodaran intrinsic value models -----
     operating_income = _first_val(income, "Operating Income", "EBIT", "Total Operating Income")
 
-    # 营运资本 = 流动资产 - 流动负债（当年与上年）
+    # Working capital = current assets - current liabilities (current and prior year)
     ca = _first_val(balance, "Total Current Assets", "Current Assets")
     cl = _first_val(balance, "Total Current Liabilities", "Current Liabilities")
     working_capital = (ca - cl) if ca is not None and cl is not None else None
@@ -155,7 +160,7 @@ def fetch_raw(ticker: str) -> RawData:
                 break
     working_capital_prior = (ca_prior - cl_prior) if ca_prior is not None and cl_prior is not None else None
 
-    # 净债务融资额（正=净借入，负=净偿还）
+    # Net debt issuance (positive = net new borrowing, negative = net repayment)
     net_debt_issuance = _first_val(cashflow, "Net Issuance Payments Of Debt", "Net Long Term Debt Issuance")
     if net_debt_issuance is None:
         ltd_i = _first_val(cashflow, "Long Term Debt Issuance") or 0.0
@@ -165,10 +170,19 @@ def fetch_raw(ticker: str) -> RawData:
         total_net = (ltd_i or 0) + (ltd_r or 0) + (std_i or 0) + (std_r or 0)
         net_debt_issuance = total_net if total_net != 0 else None
 
-    # 已支付股息总额（绝对值）
+    # Total dividends paid (absolute value)
     div_raw = _first_val(cashflow, "Common Stock Dividend Paid", "Cash Dividends Paid",
                          "Payment Of Dividends", "Dividends Paid")
     dividends_paid = abs(div_raw) if div_raw is not None else None
+
+    # ── Fallback calculations (derived from other available data when yfinance fields are missing) ──
+    # Payout ratio = dividends paid / net income (capped at 100%)
+    if payout_ratio is None and dividends_paid is not None and net_income is not None and net_income > 0:
+        payout_ratio = min(dividends_paid / net_income, 1.0)
+
+    # Diluted EPS = net income / diluted shares (back-calculated when income statement field is missing)
+    if diluted_eps is None and net_income is not None and shares is not None and shares > 0:
+        diluted_eps = net_income / shares
 
     return RawData(
         ticker=ticker,
